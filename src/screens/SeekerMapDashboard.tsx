@@ -1,19 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     View,
     Text,
+    TextInput,
     TouchableOpacity,
     ActivityIndicator,
     StyleSheet,
     StatusBar,
     Linking,
     Platform,
+    KeyboardAvoidingView,
 } from 'react-native';
-import MapView, { UrlTile, Region } from 'react-native-maps';
+import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { supabase } from '../lib/supabase';
 
-// Default region: geographic center of India — shown while GPS is loading
+// Default region: geographic centre of India — shown while GPS is loading
 const INDIA_CENTER: Region = {
     latitude: 20.5937,
     longitude: 78.9629,
@@ -21,24 +23,61 @@ const INDIA_CENTER: Region = {
     longitudeDelta: 15,
 };
 
-// OpenStreetMap tile template
-// {s} = subdomain (a/b/c) — UrlTile rotates these automatically for load balancing
+// OpenStreetMap tiles — no Google / Apple API costs
 const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+// How far from the seeker to search (metres)
+const SEARCH_RADIUS_METERS = 5000;
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface LocationCoords {
     latitude: number;
     longitude: number;
 }
 
+interface Provider {
+    id: string;
+    email: string;
+    lat: number;
+    lng: number;
+    dist_meters: number;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function formatDistance(meters: number): string {
+    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km away`;
+    return `${Math.round(meters)} m away`;
+}
+
+// ── Component ──────────────────────────────────────────────────────────────────
+
 export default function SeekerMapDashboard() {
     const mapRef = useRef<MapView>(null);
 
+    // GPS
     const [location, setLocation] = useState<LocationCoords | null>(null);
     const [locationError, setLocationError] = useState<string | null>(null);
     const [permissionDenied, setPermissionDenied] = useState(false);
+    const [gpsError, setGpsError] = useState(false);   // GPS tech failure (distinct from permission)
     const [gpsLoading, setGpsLoading] = useState(true);
+    const [retryCount, setRetryCount] = useState(0);   // incrementing retriggers the GPS useEffect
 
-    // ── Request foreground location permission and fetch current position ──
+    // Provider pins (Sprint 3.2)
+    const [providers, setProviders] = useState<Provider[]>([]);
+    const [isFetchingPins, setIsFetchingPins] = useState(false);
+
+    // Smart search (Sprint 3.2)
+    const [searchQuery, setSearchQuery] = useState('');
+
+    // Local filter — null-safe + case-insensitive email match
+    const filteredProviders = providers.filter(p =>
+        (p.email ?? '').toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    // ── Step 1: Request foreground location permission and get coords ──────────
+
     useEffect(() => {
         let cancelled = false;
 
@@ -49,15 +88,24 @@ export default function SeekerMapDashboard() {
                 if (status !== 'granted') {
                     if (!cancelled) {
                         setPermissionDenied(true);
-                        setLocationError('Location access denied. Enable it in Settings to see nearby providers.');
+                        setLocationError(
+                            'Location access denied. Enable it in Settings to see nearby providers.'
+                        );
                         setGpsLoading(false);
                     }
                     return;
                 }
 
-                const pos = await Location.getCurrentPositionAsync({
+                // Race GPS against a 10-second timeout so the spinner never hangs indefinitely
+                const GPS_TIMEOUT_MS = 10_000;
+                const gpsPromise = Location.getCurrentPositionAsync({
                     accuracy: Location.Accuracy.Balanced,
                 });
+                const timeoutPromise = new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('GPS_TIMEOUT')), GPS_TIMEOUT_MS)
+                );
+
+                const pos = await Promise.race([gpsPromise, timeoutPromise]);
 
                 if (!cancelled) {
                     const coords: LocationCoords = {
@@ -71,37 +119,83 @@ export default function SeekerMapDashboard() {
                     mapRef.current?.animateToRegion(
                         {
                             ...coords,
-                            latitudeDelta: 0.02,   // ~2 km zoom
-                            longitudeDelta: 0.02,
+                            latitudeDelta: 0.05,   // ~5 km zoom
+                            longitudeDelta: 0.05,
                         },
-                        800 // animation duration ms
+                        800
                     );
                 }
             } catch (err) {
                 if (!cancelled) {
-                    setLocationError('Could not fetch your location. Please try again.');
+                    const isTimeout = err instanceof Error && err.message === 'GPS_TIMEOUT';
+                    setLocationError(
+                        isTimeout
+                            ? 'GPS timed out. Please try again in an open area.'
+                            : 'Could not fetch your location. Please try again.'
+                    );
+                    setGpsError(true);
                     setGpsLoading(false);
                 }
             }
         })();
 
         return () => { cancelled = true; };
+        // retryCount in deps: incrementing it re-runs this effect when user taps "Try Again"
+    }, [retryCount]);
+
+    // ── Step 2: Supabase RPC — fetch nearby providers once GPS resolves ────────
+
+    const fetchNearbyProviders = useCallback(async (coords: LocationCoords) => {
+        setIsFetchingPins(true);
+        try {
+            const { data, error } = await supabase.rpc('get_providers_nearby', {
+                user_lat: coords.latitude,
+                user_lng: coords.longitude,
+                radius_meters: SEARCH_RADIUS_METERS,
+            });
+
+            if (error) {
+                // Silent in production — map is still usable without pins
+                if (__DEV__) console.warn('[SeekerMapDashboard] fetchNearbyProviders:', error.message);
+                return;
+            }
+
+            if (Array.isArray(data)) {
+                setProviders(data as Provider[]);
+            }
+        } catch (err) {
+            if (__DEV__) console.warn('[SeekerMapDashboard] network error:', err);
+        } finally {
+            setIsFetchingPins(false);
+        }
     }, []);
+
+    // Trigger fetch when location resolves
+    useEffect(() => {
+        if (location) {
+            fetchNearbyProviders(location);
+        }
+    }, [location, fetchNearbyProviders]);
+
+    // ── Handlers ─────────────────────────────────────────────────────────────
 
     const handleLogout = async () => {
         await supabase.auth.signOut();
-        // onAuthStateChange in App.tsx dispatches clearAuth() → AppNavigator shows AuthStack
+        // onAuthStateChange in App.tsx dispatches clearAuth() → AuthStack shown
     };
 
     const handleOpenSettings = () => {
         Linking.openSettings();
     };
 
+    // ── Render ─────────────────────────────────────────────────────────────────
+
     return (
         <View style={styles.container}>
             <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
 
-            {/* ── Full-screen OpenStreetMap via UrlTile ── */}
+            {/* ── Step 2 & 3: Full-screen map with OSM tiles + provider Markers ── */}
+            {/* NOTE: MapView does not support NativeWind className — use style prop */}
             <MapView
                 ref={mapRef}
                 style={styles.map}
@@ -111,42 +205,92 @@ export default function SeekerMapDashboard() {
                 rotateEnabled={false}
                 toolbarEnabled={false}
             >
-                {/* OpenStreetMap tiles — avoids Google/Apple Map API costs */}
+                {/* OpenStreetMap tiles */}
                 <UrlTile
                     urlTemplate={OSM_TILE_URL}
                     maximumZ={19}
                     flipY={false}
                 />
+
+                {/* Step 3: Provider pins — filtered by search query */}
+                {filteredProviders.map(p => (
+                    <Marker
+                        key={p.id}
+                        coordinate={{ latitude: p.lat, longitude: p.lng }}
+                        title={p.email}
+                        description={formatDistance(p.dist_meters)}
+                        pinColor="#10B981"   // brand-emerald — distinguishes from blue user dot
+                    />
+                ))}
             </MapView>
 
-            {/* ── Floating top bar: search + logout ── */}
-            <View style={styles.topBar} className="px-4 pt-12">
-                {/* Mock search bar — will be wired to Smart Search in Phase 3.2 */}
-                <TouchableOpacity
-                    style={styles.searchBar}
-                    className="flex-1 flex-row items-center bg-brand-white rounded-lg px-4 py-3 border border-brand-border mr-3"
-                    activeOpacity={0.8}
-                >
-                    <Text className="text-text-secondary text-sm flex-1">
-                        🔍  Search for services…
-                    </Text>
-                </TouchableOpacity>
+            {/* ── Step 4: Floating top bar — real TextInput search + logout ── */}
+            <KeyboardAvoidingView
+                style={styles.topBarWrapper}
+                // 'padding' on iOS lifts the bar above keyboard; Android manages via WindowSoftInput
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            >
+                <View style={styles.topBar} className="px-4 pt-12 pb-2">
 
-                {/* Logout button */}
-                <TouchableOpacity
-                    className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center"
-                    onPress={handleLogout}
-                    activeOpacity={0.85}
-                >
+                    {/* Search bar */}
+                    <View className="flex-1 flex-row items-center bg-brand-white rounded-lg px-3 py-2.5 border border-brand-border mr-3">
+                        <Text className="text-text-secondary text-sm mr-1.5">🔍</Text>
+
+                        <TextInput
+                            className="flex-1 text-text-primary text-sm p-0"
+                            placeholder="Search providers…"
+                            placeholderTextColor="#94A3B8"
+                            value={searchQuery}
+                            onChangeText={setSearchQuery}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            returnKeyType="search"
+                        />
+
+                        {/* isFetchingPins spinner — shown while RPC is in-flight */}
+                        {isFetchingPins && (
+                            <ActivityIndicator
+                                size="small"
+                                color="#64748B"
+                                style={{ marginLeft: 6 }}
+                            />
+                        )}
+
+                        {/* Clear (✕) button — only shown when query is non-empty */}
+                        {searchQuery.length > 0 && !isFetchingPins && (
+                            <TouchableOpacity
+                                onPress={() => setSearchQuery('')}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                                <Text className="text-text-secondary text-base ml-2">✕</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+
+                    {/* Logout */}
+                    <TouchableOpacity
+                        className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center"
+                        onPress={handleLogout}
+                        activeOpacity={0.85}
+                    >
+                        <Text className="text-brand-white text-xs font-semibold">Exit</Text>
+                    </TouchableOpacity>
+                </View>
+            </KeyboardAvoidingView>
+
+            {/* Provider count badge — visible once pins load */}
+            {!gpsLoading && !permissionDenied && providers.length > 0 && (
+                <View style={styles.pinCountBadge} className="bg-brand-emerald rounded-full px-3 py-1">
                     <Text className="text-brand-white text-xs font-semibold">
-                        Exit
+                        {filteredProviders.length}{' '}
+                        {filteredProviders.length === 1 ? 'provider' : 'providers'} nearby
                     </Text>
-                </TouchableOpacity>
-            </View>
+                </View>
+            )}
 
             {/* ── GPS loading overlay ── */}
             {gpsLoading && (
-                <View style={styles.loadingOverlay} className="items-center justify-center">
+                <View style={styles.fullOverlay} className="items-center justify-center">
                     <View className="bg-brand-white rounded-xl px-6 py-5 items-center">
                         <ActivityIndicator size="large" color="#0F172A" />
                         <Text className="mt-3 text-sm text-text-secondary">
@@ -156,7 +300,7 @@ export default function SeekerMapDashboard() {
                 </View>
             )}
 
-            {/* ── Permission denied error card ── */}
+            {/* ── Permission denied card ── */}
             {permissionDenied && (
                 <View style={styles.errorCard} className="mx-6 bg-brand-white rounded-xl p-6 items-center">
                     <Text className="text-2xl mb-2">📍</Text>
@@ -180,9 +324,40 @@ export default function SeekerMapDashboard() {
                         onPress={handleLogout}
                         activeOpacity={0.7}
                     >
-                        <Text className="text-text-secondary text-sm">
-                            Sign Out
-                        </Text>
+                        <Text className="text-text-secondary text-sm">Sign Out</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+
+            {/* ── GPS technical error card (timeout / device error — NOT permission) ── */}
+            {gpsError && !permissionDenied && (
+                <View style={styles.errorCard} className="mx-6 bg-brand-white rounded-xl p-6 items-center">
+                    <Text className="text-2xl mb-2">⚠️</Text>
+                    <Text className="text-base font-bold text-text-primary text-center mb-2">
+                        Location Unavailable
+                    </Text>
+                    <Text className="text-sm text-text-secondary text-center mb-5 leading-5">
+                        {locationError}
+                    </Text>
+                    <TouchableOpacity
+                        className="bg-brand-navy rounded-lg px-6 py-3 w-full items-center"
+                        onPress={() => {
+                            // Retry: reset GPS state and increment retryCount → re-runs useEffect
+                            setGpsError(false);
+                            setLocationError(null);
+                            setGpsLoading(true);
+                            setRetryCount(c => c + 1);
+                        }}
+                        activeOpacity={0.85}
+                    >
+                        <Text className="text-brand-white text-sm font-semibold">Try Again</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        className="mt-3 py-2 w-full items-center"
+                        onPress={handleLogout}
+                        activeOpacity={0.7}
+                    >
+                        <Text className="text-text-secondary text-sm">Sign Out</Text>
                     </TouchableOpacity>
                 </View>
             )}
@@ -190,38 +365,52 @@ export default function SeekerMapDashboard() {
     );
 }
 
+// ── Styles ─────────────────────────────────────────────────────────────────────
+
+const SHADOW_STYLE = Platform.select({
+    ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 4,
+    },
+    android: { elevation: 4 },
+});
+
 const styles = StyleSheet.create({
     container: {
         flex: 1,
     },
-    // MapView MUST use style prop — NativeWind className does not work on MapView
+    // MapView MUST use style prop — NativeWind className is not supported on MapView
     map: {
         flex: 1,
     },
-    topBar: {
+    topBarWrapper: {
         position: 'absolute',
         top: 0,
         left: 0,
         right: 0,
+    },
+    topBar: {
         flexDirection: 'row',
         alignItems: 'center',
-        // Subtle shadow so bar is readable over map tiles
+        ...SHADOW_STYLE,
+    },
+    pinCountBadge: {
+        position: 'absolute',
+        bottom: 100,
+        alignSelf: 'center',
         ...Platform.select({
             ios: {
                 shadowColor: '#000',
                 shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.15,
+                shadowOpacity: 0.2,
                 shadowRadius: 4,
             },
-            android: {
-                elevation: 4,
-            },
+            android: { elevation: 4 },
         }),
     },
-    searchBar: {
-        // Defined separately so TouchableOpacity can get the shadow from topBar
-    },
-    loadingOverlay: {
+    fullOverlay: {
         position: 'absolute',
         top: 0,
         left: 0,
@@ -234,7 +423,6 @@ const styles = StyleSheet.create({
         bottom: 60,
         left: 0,
         right: 0,
-        // Shadow for card over map
         ...Platform.select({
             ios: {
                 shadowColor: '#000',
@@ -242,9 +430,7 @@ const styles = StyleSheet.create({
                 shadowOpacity: 0.2,
                 shadowRadius: 8,
             },
-            android: {
-                elevation: 6,
-            },
+            android: { elevation: 6 },
         }),
     },
 });
