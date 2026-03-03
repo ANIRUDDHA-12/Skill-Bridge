@@ -12,41 +12,68 @@ import {
     StatusBar,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RootStackParamList } from '../navigation/AppNavigator';
+import { AuthStackParamList } from '../navigation/AppNavigator';
+import { supabase } from '../lib/supabase';
 
-type LoginScreenNavigationProp = NativeStackNavigationProp<
-    RootStackParamList,
-    'Login'
->;
+type LoginScreenNavigationProp = NativeStackNavigationProp<AuthStackParamList, 'Login'>;
 
 interface Props {
     navigation: LoginScreenNavigationProp;
 }
 
+// Basic email format validation
+const isValidEmail = (email: string) =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+
 export default function LoginScreen({ navigation }: Props) {
-    const [phone, setPhone] = useState('');
+    const [email, setEmail] = useState('');
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
 
-    // Strip non-numeric characters and clear error on change
-    const handlePhoneChange = useCallback((text: string) => {
-        const digits = text.replace(/[^0-9]/g, '');
-        setPhone(digits);
+    const handleEmailChange = useCallback((text: string) => {
+        setEmail(text);
         if (error) setError('');
     }, [error]);
 
-    const handleGetOtp = useCallback(() => {
-        if (phone.length !== 10) {
-            setError('Please enter a valid 10-digit number');
+    const handleGetOtp = useCallback(async () => {
+        const trimmedEmail = email.trim();
+
+        if (!isValidEmail(trimmedEmail)) {
+            setError('Please enter a valid email address');
             return;
         }
-        // Guard: prevent double-tap pushing OTP screen twice
         if (submitting) return;
+
         setSubmitting(true);
-        navigation.navigate('Otp', { phone });
-        // Reset after short delay so back-navigation re-enables the button
-        setTimeout(() => setSubmitting(false), 1000);
-    }, [phone, submitting, navigation]);
+        setError('');
+
+        try {
+            const { error: supaError } = await supabase.auth.signInWithOtp({
+                email: trimmedEmail,
+            });
+
+            if (supaError) {
+                // Humanise common Supabase errors
+                const raw = supaError.message;
+                const humanised =
+                    raw.includes('rate') || raw.includes('limit')
+                        ? 'Too many attempts. Please wait a minute and try again.'
+                        : raw.includes('invalid') || raw.includes('unable to validate')
+                            ? 'That doesn\'t look like a valid email address.'
+                            : 'Something went wrong. Please try again.';
+                setError(humanised);
+                setSubmitting(false);
+                return;
+            }
+
+            // Success — navigate to OTP screen
+            navigation.navigate('Otp', { email: trimmedEmail });
+        } catch {
+            setError('Network error. Please check your connection and try again.');
+        } finally {
+            setSubmitting(false);
+        }
+    }, [email, submitting, navigation]);
 
     return (
         <SafeAreaView className="flex-1 bg-brand-white">
@@ -60,7 +87,6 @@ export default function LoginScreen({ navigation }: Props) {
 
                         {/* ── Branding ── */}
                         <View className="mb-14 items-center">
-                            {/* Logo placeholder — replace with <Image> in Phase 2 */}
                             <View className="w-14 h-14 rounded-xl bg-brand-navy items-center justify-center mb-4">
                                 <Text className="text-brand-white text-2xl font-bold">S</Text>
                             </View>
@@ -77,32 +103,28 @@ export default function LoginScreen({ navigation }: Props) {
                             Sign In
                         </Text>
                         <Text className="text-sm text-text-secondary mb-5">
-                            Enter your mobile number to get a one-time password
+                            Enter your email address to get a one-time password
                         </Text>
 
-                        {/* ── Phone Input ── */}
+                        {/* ── Email Input ── */}
                         <View
                             className={`flex-row items-center rounded-lg px-4 py-3.5 bg-brand-surface border ${error ? 'border-red-400' : 'border-brand-border'
                                 }`}
                         >
-                            {/* Fixed +91 prefix */}
-                            <Text className="text-base font-semibold text-text-primary">
-                                +91
-                            </Text>
-                            {/* Vertical divider */}
-                            <View className="w-px h-5 bg-brand-border mx-3" />
                             <TextInput
                                 className="flex-1 text-base text-text-primary p-0"
-                                placeholder="10-digit mobile number"
+                                placeholder="you@example.com"
                                 placeholderTextColor="#94A3B8"
-                                keyboardType="numeric"
-                                maxLength={10}
-                                value={phone}
-                                onChangeText={handlePhoneChange}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                autoComplete="email"
+                                textContentType="emailAddress"
+                                value={email}
+                                maxLength={254}  // RFC 5321 email max length
+                                onChangeText={handleEmailChange}
                                 returnKeyType="done"
                                 onSubmitEditing={handleGetOtp}
-                                autoComplete="tel"
-                                textContentType="telephoneNumber"
                             />
                         </View>
 
@@ -127,13 +149,9 @@ export default function LoginScreen({ navigation }: Props) {
                         {/* ── Footer ── */}
                         <Text className="mt-8 text-xs text-text-secondary text-center leading-5">
                             By continuing, you agree to our{' '}
-                            <Text className="text-brand-navy font-medium">
-                                Terms of Service
-                            </Text>{' '}
-                            and{' '}
-                            <Text className="text-brand-navy font-medium">
-                                Privacy Policy
-                            </Text>
+                            <Text className="text-brand-navy font-medium">Terms of Service</Text>
+                            {' '}and{' '}
+                            <Text className="text-brand-navy font-medium">Privacy Policy</Text>
                         </Text>
                     </View>
                 </TouchableWithoutFeedback>
