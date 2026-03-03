@@ -14,9 +14,6 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
-import { useDispatch } from 'react-redux';
-import { AppDispatch } from '../store/store';
-import { setSession, setAccountType } from '../store/authSlice';
 import { AuthStackParamList } from '../navigation/AppNavigator';
 import { supabase } from '../lib/supabase';
 
@@ -40,7 +37,6 @@ function maskEmail(email: string): string {
 
 export default function OtpScreen({ navigation, route }: Props) {
     const { email } = route.params;
-    const dispatch = useDispatch<AppDispatch>();
 
     const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(''));
     const [timer, setTimer] = useState(RESEND_COUNTDOWN);
@@ -115,7 +111,7 @@ export default function OtpScreen({ navigation, route }: Props) {
         await supabase.auth.signInWithOtp({ email });
     }, [canResend, email]);
 
-    // Verify OTP + profile lookup
+    // Verify OTP — routing is handled exclusively by onAuthStateChange in App.tsx
     const handleVerify = useCallback(async () => {
         const token = otp.join('');
         if (token.length < OTP_LENGTH || verifying) return;
@@ -123,15 +119,15 @@ export default function OtpScreen({ navigation, route }: Props) {
         setError('');
 
         try {
-            const { data, error: verifyError } = await supabase.auth.verifyOtp({
+            const { error: verifyError } = await supabase.auth.verifyOtp({
                 email,
                 token,
                 type: 'email',
             });
 
-            if (verifyError || !data.session || !data.user) {
+            if (verifyError) {
                 // Humanise Supabase errors — their raw messages are often technical
-                const raw = verifyError?.message ?? '';
+                const raw = verifyError.message;
                 const humanised =
                     raw.includes('expired') || raw.includes('invalid')
                         ? 'That code is incorrect or has expired. Please request a new one.'
@@ -141,31 +137,17 @@ export default function OtpScreen({ navigation, route }: Props) {
                 return;
             }
 
-            const { session, user } = data;
-
-            // Dispatch session immediately
-            dispatch(setSession(session));
-
-            // Query profiles table to check if account_type exists
-            const { data: profile } = await supabase
-                .from('profiles')
-                .select('account_type')
-                .eq('id', user.id)
-                .single();
-
-            if (profile?.account_type) {
-                // Returning user — dispatch accountType → AppNavigator routes to dashboard
-                dispatch(setAccountType(profile.account_type as 'seeker' | 'provider'));
-            }
-            // If PGRST116 (no rows) or any other error: accountType stays null
-            // AppNavigator auto-renders SetupStack (RoleSelectionScreen)
-            // No navigation.navigate() needed — Redux state drives it
+            // verifyOtp success triggers onAuthStateChange in App.tsx which:
+            //   1. Queries the profiles table
+            //   2. Dispatches setSession + setAccountType (if profile exists)
+            //   3. AppNavigator transitions to the correct stack automatically
+            // No manual dispatch or navigation.navigate() needed here.
 
         } catch {
             setError('Network error. Please check your connection and try again.');
             setVerifying(false);
         }
-    }, [otp, verifying, email, dispatch]);
+    }, [otp, verifying, email]);
 
     const isComplete = otp.every((d) => d !== '');
     const timerLabel = `0:${String(timer).padStart(2, '0')}`;

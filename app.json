@@ -12,9 +12,14 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Skill-Bridge needs your location to show nearby service providers within your area.",
+        "NSLocationAlwaysUsageDescription": "Skill-Bridge needs your location to show nearby service providers within your area."
+      }
     },
     "android": {
+      "package": "com.skillbridge.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -25,6 +30,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Skill-Bridge needs your location to show nearby service providers within your area."
+        }
+      ]
+    ]
   }
 }

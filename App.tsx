@@ -24,30 +24,33 @@ function AppInner() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (session) {
-          dispatch(setSession(session));
-
-          // Query profiles to restore accountType
+          // ── IMPORTANT: query profile BEFORE dispatching to Redux ──
+          // Dispatching setSession alone triggers AppNavigator to render SetupStack
+          // (RoleSelectionScreen), causing a flash for returning users.
+          // By querying first and dispatching both together, AppNavigator
+          // transitions directly to the correct stack in a single render.
           const { data: profile } = await supabase
             .from('profiles')
             .select('account_type')
             .eq('id', session.user.id)
             .single();
 
+          // Dispatch session + accountType atomically
+          dispatch(setSession(session));
           if (profile?.account_type) {
             dispatch(setAccountType(profile.account_type as 'seeker' | 'provider'));
           }
-          // If no profile (new user): accountType stays null → SetupStack
+          // No profile row → accountType stays null → AppNavigator shows SetupStack
         } else {
-          // SIGNED_OUT or no session
+          // SIGNED_OUT or expired session
           dispatch(clearAuth());
         }
 
-        // Always set loading false after first auth state is known
+        // Always mark loading complete after first auth state resolves
         dispatch(setLoading(false));
       }
     );
 
-    // Cleanup listener on unmount
     return () => subscription.unsubscribe();
   }, [dispatch]);
 
