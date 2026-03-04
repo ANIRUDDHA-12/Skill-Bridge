@@ -10,7 +10,7 @@ import OtpScreen from '../screens/OtpScreen';
 import RoleSelectionScreen from '../screens/RoleSelectionScreen';
 import SeekerMapDashboard from '../screens/SeekerMapDashboard';
 import ProviderSetupScreen from '../screens/ProviderSetupScreen';
-import ProviderTeaserDashboard from '../screens/ProviderTeaserDashboard';
+import ProviderJobFeedScreen from '../screens/ProviderJobFeedScreen';
 
 // ── Typed param lists per stack ──
 export type AuthStackParamList = {
@@ -33,7 +33,7 @@ export type ProviderSetupStackParamList = {
 
 // Provider who HAS completed setup
 export type ProviderStackParamList = {
-    ProviderTeaserDashboard: undefined;
+    ProviderJobFeed: undefined;
 };
 
 // ── Stack navigators ──
@@ -87,7 +87,7 @@ function ProviderSetupNavigator() {
 function ProviderNavigator() {
     return (
         <ProviderStack.Navigator screenOptions={{ ...SCREEN_OPTIONS, contentStyle: { backgroundColor: '#F8FAFC' } }}>
-            <ProviderStack.Screen name="ProviderTeaserDashboard" component={ProviderTeaserDashboard} />
+            <ProviderStack.Screen name="ProviderJobFeed" component={ProviderJobFeedScreen} />
         </ProviderStack.Navigator>
     );
 }

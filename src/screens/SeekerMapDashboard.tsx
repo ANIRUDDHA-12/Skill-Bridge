@@ -10,9 +10,12 @@ import {
     Linking,
     Platform,
     KeyboardAvoidingView,
+    Alert,
 } from 'react-native';
 import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store/store';
 import { supabase } from '../lib/supabase';
 
 // Default region: geographic centre of India — shown while GPS is loading
@@ -76,10 +79,22 @@ export default function SeekerMapDashboard() {
     // Bottom sheet — selected provider detail (Sprint 3.3)
     const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null);
 
+    // Booking (Sprint 4.1)
+    const [isBooking, setIsBooking] = useState(false);
+    const [bookingError, setBookingError] = useState<string | null>(null);
+
+    // Auth session — seeker_id source for booking INSERT
+    const session = useSelector((state: RootState) => state.auth.session);
+
     // Local filter — null-safe + case-insensitive service_category match
     const filteredProviders = providers.filter(p =>
         (p.service_category ?? '').toLowerCase().includes(searchQuery.toLowerCase())
     );
+
+    // Clear booking error whenever bottom sheet opens on a new provider or closes
+    useEffect(() => {
+        setBookingError(null);
+    }, [selectedProvider]);
 
     // ── Step 1: Request foreground location permission and get coords ──────────
 
@@ -184,6 +199,40 @@ export default function SeekerMapDashboard() {
 
     // ── Handlers ─────────────────────────────────────────────────────────────
 
+    // ── Sprint 4.1: Book Now ─────────────────────────────────────────────────
+
+    const handleBookNow = useCallback(async (provider: Provider) => {
+        if (isBooking || !session) return;
+
+        setIsBooking(true);
+        setBookingError(null);
+
+        try {
+            const { error } = await supabase.from('bookings').insert({
+                seeker_id: session.user.id,   // from Redux — no extra getUser() call
+                provider_id: provider.id,
+                service_category: provider.service_category,
+                price_per_hour: provider.price_per_hour,
+                // status defaults to 'pending' on the DB side via CHECK constraint
+            });
+
+            if (error) throw new Error(error.message);
+
+            // Close sheet first, then alert — prevents Alert blocking sheet animation
+            setSelectedProvider(null);
+            Alert.alert(
+                'Booking Request Sent 📨',
+                'Your request is on its way. The provider will accept or decline shortly.'
+            );
+        } catch (err) {
+            // Inline error inside bottom sheet — not via Alert (avoids blocking UX)
+            const msg = err instanceof Error ? err.message : 'Booking failed. Please try again.';
+            setBookingError(msg);
+        } finally {
+            setIsBooking(false);
+        }
+    }, [isBooking, session]);
+
     const handleLogout = async () => {
         await supabase.auth.signOut();
         // onAuthStateChange in App.tsx dispatches clearAuth() → AuthStack shown
@@ -192,6 +241,7 @@ export default function SeekerMapDashboard() {
     const handleOpenSettings = () => {
         Linking.openSettings();
     };
+
 
     // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -350,17 +400,26 @@ export default function SeekerMapDashboard() {
                         )}
                     </View>
 
-                    {/* Book Now — placeholder for Sprint 4.1 */}
+                    {/* Booking error — shown inline inside sheet */}
+                    {bookingError && (
+                        <View className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4">
+                            <Text className="text-red-600 text-sm">{bookingError}</Text>
+                        </View>
+                    )}
+
+                    {/* Book Now — wired to Supabase INSERT (Sprint 4.1) */}
                     <TouchableOpacity
-                        className="bg-brand-navy rounded-xl py-4 items-center"
+                        className={`rounded-xl py-4 items-center justify-center ${isBooking ? 'bg-brand-border' : 'bg-brand-navy'
+                            }`}
                         activeOpacity={0.85}
-                        onPress={() => {
-                            // Sprint 4.1: navigate to booking flow
-                        }}
+                        disabled={isBooking}
+                        onPress={() => selectedProvider && handleBookNow(selectedProvider)}
                     >
-                        <Text className="text-brand-white text-sm font-semibold">
-                            Book Now
-                        </Text>
+                        {isBooking ? (
+                            <ActivityIndicator color="#FFFFFF" />
+                        ) : (
+                            <Text className="text-brand-white text-sm font-semibold">Book Now</Text>
+                        )}
                     </TouchableOpacity>
                 </View>
             )}
