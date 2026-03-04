@@ -38,7 +38,9 @@ interface LocationCoords {
 
 interface Provider {
     id: string;
-    email: string;
+    display_name: string;
+    service_category: string;
+    price_per_hour: number;
     lat: number;
     lng: number;
     dist_meters: number;
@@ -71,9 +73,12 @@ export default function SeekerMapDashboard() {
     // Smart search (Sprint 3.2)
     const [searchQuery, setSearchQuery] = useState('');
 
-    // Local filter — null-safe + case-insensitive email match
+    // Bottom sheet — selected provider detail (Sprint 3.3)
+    const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null);
+
+    // Local filter — null-safe + case-insensitive service_category match
     const filteredProviders = providers.filter(p =>
-        (p.email ?? '').toLowerCase().includes(searchQuery.toLowerCase())
+        (p.service_category ?? '').toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     // ── Step 1: Request foreground location permission and get coords ──────────
@@ -204,6 +209,7 @@ export default function SeekerMapDashboard() {
                 showsMyLocationButton={false}
                 rotateEnabled={false}
                 toolbarEnabled={false}
+                onPress={() => setSelectedProvider(null)}  // dismiss bottom sheet on map tap
             >
                 {/* OpenStreetMap tiles */}
                 <UrlTile
@@ -212,14 +218,15 @@ export default function SeekerMapDashboard() {
                     flipY={false}
                 />
 
-                {/* Step 3: Provider pins — filtered by search query */}
+                {/* Step 3: Provider pins — filtered by search, onPress opens bottom sheet */}
                 {filteredProviders.map(p => (
                     <Marker
                         key={p.id}
                         coordinate={{ latitude: p.lat, longitude: p.lng }}
-                        title={p.email}
-                        description={formatDistance(p.dist_meters)}
-                        pinColor="#10B981"   // brand-emerald — distinguishes from blue user dot
+                        title={p.display_name}
+                        description={`${p.service_category} · ${formatDistance(p.dist_meters)}`}
+                        pinColor="#10B981"
+                        onPress={() => setSelectedProvider(p)}
                     />
                 ))}
             </MapView>
@@ -238,7 +245,7 @@ export default function SeekerMapDashboard() {
 
                         <TextInput
                             className="flex-1 text-text-primary text-sm p-0"
-                            placeholder="Search providers…"
+                            placeholder="Search by category (e.g. Plumber)…"
                             placeholderTextColor="#94A3B8"
                             value={searchQuery}
                             onChangeText={setSearchQuery}
@@ -297,6 +304,64 @@ export default function SeekerMapDashboard() {
                             Getting your location…
                         </Text>
                     </View>
+                </View>
+            )}
+
+            {/* ── Provider Detail Bottom Sheet (Sprint 3.3) ── */}
+            {selectedProvider && (
+                <View style={styles.bottomSheet}>
+                    {/* Close button */}
+                    <TouchableOpacity
+                        style={styles.bottomSheetClose}
+                        onPress={() => setSelectedProvider(null)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                        <Text className="text-text-secondary text-lg font-bold">✕</Text>
+                    </TouchableOpacity>
+
+                    {/* Drag handle */}
+                    <View style={styles.dragHandle} />
+
+                    {/* Provider name + category badge */}
+                    <Text className="text-xl font-bold text-text-primary mt-3 mb-1">
+                        {selectedProvider.display_name ?? 'Unknown Provider'}
+                    </Text>
+                    <View className="flex-row items-center mb-4">
+                        <View className="bg-brand-navy rounded-full px-3 py-1 mr-2">
+                            <Text className="text-brand-white text-xs font-medium">
+                                {selectedProvider.service_category}
+                            </Text>
+                        </View>
+                        <Text className="text-text-secondary text-sm">
+                            {formatDistance(selectedProvider.dist_meters)}
+                        </Text>
+                    </View>
+
+                    {/* Price */}
+                    <View className="flex-row items-baseline mb-6">
+                        <Text className="text-2xl font-bold text-text-primary">
+                            {selectedProvider.price_per_hour != null
+                                ? `₹${selectedProvider.price_per_hour.toFixed(0)}`
+                                : 'Price on request'
+                            }
+                        </Text>
+                        {selectedProvider.price_per_hour != null && (
+                            <Text className="text-text-secondary text-sm ml-1">/ hr</Text>
+                        )}
+                    </View>
+
+                    {/* Book Now — placeholder for Sprint 4.1 */}
+                    <TouchableOpacity
+                        className="bg-brand-navy rounded-xl py-4 items-center"
+                        activeOpacity={0.85}
+                        onPress={() => {
+                            // Sprint 4.1: navigate to booking flow
+                        }}
+                    >
+                        <Text className="text-brand-white text-sm font-semibold">
+                            Book Now
+                        </Text>
+                    </TouchableOpacity>
                 </View>
             )}
 
@@ -432,5 +497,41 @@ const styles = StyleSheet.create({
             },
             android: { elevation: 6 },
         }),
+    },
+    // ── Provider Detail Bottom Sheet ─────────────────────────────────────────
+    bottomSheet: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        backgroundColor: '#F8FAFC',   // brand-surface
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        paddingHorizontal: 24,
+        paddingBottom: 36,
+        paddingTop: 16,
+        ...Platform.select({
+            ios: {
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: -4 },
+                shadowOpacity: 0.12,
+                shadowRadius: 12,
+            },
+            android: { elevation: 16 },
+        }),
+    },
+    dragHandle: {
+        width: 40,
+        height: 4,
+        backgroundColor: '#E2E8F0',  // brand-border
+        borderRadius: 2,
+        alignSelf: 'center',
+        marginBottom: 4,
+    },
+    bottomSheetClose: {
+        position: 'absolute',
+        top: 16,
+        right: 20,
+        padding: 4,
     },
 });

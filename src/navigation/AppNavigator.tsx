@@ -9,6 +9,7 @@ import LoginScreen from '../screens/LoginScreen';
 import OtpScreen from '../screens/OtpScreen';
 import RoleSelectionScreen from '../screens/RoleSelectionScreen';
 import SeekerMapDashboard from '../screens/SeekerMapDashboard';
+import ProviderSetupScreen from '../screens/ProviderSetupScreen';
 import ProviderTeaserDashboard from '../screens/ProviderTeaserDashboard';
 
 // ── Typed param lists per stack ──
@@ -25,6 +26,12 @@ export type SeekerStackParamList = {
     SeekerMapDashboard: undefined;
 };
 
+// Provider who has NOT completed setup (display_name null)
+export type ProviderSetupStackParamList = {
+    ProviderSetup: undefined;
+};
+
+// Provider who HAS completed setup
 export type ProviderStackParamList = {
     ProviderTeaserDashboard: undefined;
 };
@@ -33,6 +40,7 @@ export type ProviderStackParamList = {
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 const SetupStack = createNativeStackNavigator<SetupStackParamList>();
 const SeekerStack = createNativeStackNavigator<SeekerStackParamList>();
+const ProviderSetupStack = createNativeStackNavigator<ProviderSetupStackParamList>();
 const ProviderStack = createNativeStackNavigator<ProviderStackParamList>();
 
 const SCREEN_OPTIONS = {
@@ -66,6 +74,16 @@ function SeekerNavigator() {
     );
 }
 
+// Shown to providers who haven't filled in display_name / service_category yet
+function ProviderSetupNavigator() {
+    return (
+        <ProviderSetupStack.Navigator screenOptions={{ ...SCREEN_OPTIONS, animation: 'fade' }}>
+            <ProviderSetupStack.Screen name="ProviderSetup" component={ProviderSetupScreen} />
+        </ProviderSetupStack.Navigator>
+    );
+}
+
+// Shown to providers who have completed setup
 function ProviderNavigator() {
     return (
         <ProviderStack.Navigator screenOptions={{ ...SCREEN_OPTIONS, contentStyle: { backgroundColor: '#F8FAFC' } }}>
@@ -76,7 +94,7 @@ function ProviderNavigator() {
 
 // ── Root: reads Redux and renders the correct stack ──
 export default function AppNavigator() {
-    const { session, accountType, isLoading } = useSelector(
+    const { session, accountType, profileComplete, isLoading } = useSelector(
         (state: RootState) => state.auth
     );
 
@@ -89,9 +107,9 @@ export default function AppNavigator() {
         );
     }
 
-    // Conditional stack rendering based on auth state
     if (!session) return <AuthNavigator />;
-    if (!accountType) return <SetupNavigator />;
+    if (!accountType) return <SetupNavigator />;        // pick role
     if (accountType === 'seeker') return <SeekerNavigator />;
-    return <ProviderNavigator />;
+    if (accountType === 'provider' && !profileComplete) return <ProviderSetupNavigator />; // fill profile
+    return <ProviderNavigator />;                                                          // dashboard
 }
