@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     View,
     Text,
-    FlatList,
+    SectionList,
     TouchableOpacity,
     ActivityIndicator,
     StatusBar,
@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store/store';
 import { supabase } from '../lib/supabase';
+import PinModal from '../components/PinModal';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -19,17 +20,25 @@ interface Booking {
     id: string;
     seeker_id: string;
     service_category: string;
-    price_per_hour: number;
+    price_per_hour: number | null;
     status: 'pending' | 'accepted' | 'declined' | 'in_progress' | 'completed' | 'cancelled';
     created_at: string;
+    doorstep_pin: string | null;
+    started_at: string | null;
+    seeker: { display_name: string | null } | null;  // JOIN from profiles
+}
+
+// SectionList requires typed sections
+interface Section {
+    title: string;
+    data: Booking[];
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Human-readable relative time: "3 min ago", "2 hrs ago", etc. */
 function timeAgo(iso: string): string {
     const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-    if (diff <= 0) return 'just now';          // guard against future server timestamps
+    if (diff <= 0) return 'just now';
     if (diff < 60) return 'just now';
     if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
@@ -40,18 +49,21 @@ function timeAgo(iso: string): string {
 
 interface JobCardProps {
     job: Booking;
-    onAccept: (id: string) => void;
-    onDecline: (id: string) => void;
-    actionLoading: string | null; // id of job currently being actioned
+    onAccept?: (id: string) => void;
+    onDecline?: (id: string) => void;
+    onStartJob?: (job: Booking) => void;
+    actionLoading: string | null;
 }
 
-function JobCard({ job, onAccept, onDecline, actionLoading }: JobCardProps) {
+function JobCard({ job, onAccept, onDecline, onStartJob, actionLoading }: JobCardProps) {
     const busy = actionLoading === job.id;
+    const seekerName = job.seeker?.display_name ?? 'Customer';
+    const isAccepted = job.status === 'accepted';
 
     return (
         <View className="bg-brand-white rounded-2xl p-5 mb-3 mx-4 border border-brand-border">
             {/* Category + time */}
-            <View className="flex-row items-center justify-between mb-3">
+            <View className="flex-row items-center justify-between mb-2">
                 <View className="bg-brand-navy rounded-full px-3 py-1">
                     <Text className="text-brand-white text-xs font-semibold">
                         {job.service_category}
@@ -60,10 +72,16 @@ function JobCard({ job, onAccept, onDecline, actionLoading }: JobCardProps) {
                 <Text className="text-text-secondary text-xs">{timeAgo(job.created_at)}</Text>
             </View>
 
+            {/* Seeker name (D16 fix) */}
+            <Text className="text-sm text-text-secondary mb-1">👤 {seekerName}</Text>
+
             {/* Price */}
             <View className="flex-row items-baseline mb-4">
                 <Text className="text-2xl font-bold text-text-primary">
-                    {job.price_per_hour != null ? `₹${job.price_per_hour.toFixed(0)}` : 'Price on request'}
+                    {job.price_per_hour != null
+                        ? `₹${job.price_per_hour.toFixed(0)}`
+                        : 'Price on request'
+                    }
                 </Text>
                 {job.price_per_hour != null && (
                     <Text className="text-text-secondary text-sm ml-1">/ hr</Text>
@@ -73,12 +91,22 @@ function JobCard({ job, onAccept, onDecline, actionLoading }: JobCardProps) {
             {/* Action buttons */}
             {busy ? (
                 <ActivityIndicator color="#0F172A" />
+            ) : isAccepted ? (
+                // Active job — show Start Job button
+                <TouchableOpacity
+                    className="bg-brand-emerald rounded-xl py-3 items-center"
+                    activeOpacity={0.85}
+                    onPress={() => onStartJob?.(job)}
+                >
+                    <Text className="text-brand-white text-sm font-semibold">🔐 Start Job</Text>
+                </TouchableOpacity>
             ) : (
+                // Pending — Accept / Decline
                 <View className="flex-row gap-3">
                     <TouchableOpacity
                         className="flex-1 bg-brand-emerald rounded-xl py-3 items-center"
                         activeOpacity={0.85}
-                        onPress={() => onAccept(job.id)}
+                        onPress={() => onAccept?.(job.id)}
                     >
                         <Text className="text-brand-white text-sm font-semibold">Accept</Text>
                     </TouchableOpacity>
@@ -86,7 +114,7 @@ function JobCard({ job, onAccept, onDecline, actionLoading }: JobCardProps) {
                     <TouchableOpacity
                         className="flex-1 border border-brand-border rounded-xl py-3 items-center"
                         activeOpacity={0.75}
-                        onPress={() => onDecline(job.id)}
+                        onPress={() => onDecline?.(job.id)}
                     >
                         <Text className="text-text-secondary text-sm font-semibold">Decline</Text>
                     </TouchableOpacity>
@@ -99,7 +127,6 @@ function JobCard({ job, onAccept, onDecline, actionLoading }: JobCardProps) {
 // ── Main Screen ────────────────────────────────────────────────────────────────
 
 export default function ProviderJobFeedScreen() {
-    // userId from Redux session — avoids redundant getUser() calls on every fetch/refresh
     const session = useSelector((state: RootState) => state.auth.session);
     const userId = session?.user?.id ?? null;
 
@@ -109,7 +136,22 @@ export default function ProviderJobFeedScreen() {
     const [error, setError] = useState<string | null>(null);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-    // ── Fetch pending bookings ─────────────────────────────────────────────────
+    // PIN modal state (Sprint 4.2)
+    const [pinModalJob, setPinModalJob] = useState<Booking | null>(null);   // which job's PIN is being entered
+    const [pinError, setPinError] = useState<string | null>(null);
+    const [pinLoading, setPinLoading] = useState(false);
+
+    // ── Derived sections for SectionList (memoized — B4 fix) ─────────────────
+
+    const pendingJobs = useMemo(() => jobs.filter(j => j.status === 'pending'), [jobs]);
+    const activeJobs = useMemo(() => jobs.filter(j => j.status === 'accepted'), [jobs]);
+
+    const sections: Section[] = useMemo(() => [
+        ...(activeJobs.length > 0 ? [{ title: 'Active Jobs', data: activeJobs }] : []),
+        ...(pendingJobs.length > 0 ? [{ title: 'Pending Requests', data: pendingJobs }] : []),
+    ], [activeJobs, pendingJobs]);
+
+    // ── Fetch bookings ────────────────────────────────────────────────────────
 
     const fetchJobs = useCallback(async (silent = false) => {
         if (!userId) return;
@@ -117,11 +159,12 @@ export default function ProviderJobFeedScreen() {
         setError(null);
 
         try {
+            // Join seeker's display_name from profiles (fixes D16)
             const { data, error: dbError } = await supabase
                 .from('bookings')
-                .select('*')
+                .select('*, seeker:profiles!seeker_id(display_name)')
                 .eq('provider_id', userId)
-                .eq('status', 'pending')
+                .in('status', ['pending', 'accepted'])   // both sections
                 .order('created_at', { ascending: false });
 
             if (dbError) throw new Error(dbError.message);
@@ -142,13 +185,12 @@ export default function ProviderJobFeedScreen() {
         if (!userId) return;
 
         let isMounted = true;
-        // Store channel ref so cleanup can always remove it regardless of mount timing
         let channel: ReturnType<typeof supabase.channel> | null = null;
 
         const init = async () => {
             await fetchJobs(false);
 
-            if (!isMounted) return; // component unmounted during fetch — don't subscribe
+            if (!isMounted) return;
 
             channel = supabase
                 .channel(`bookings-provider-${userId}`)
@@ -162,8 +204,7 @@ export default function ProviderJobFeedScreen() {
                     },
                     (payload) => {
                         if (!isMounted) return;
-                        const newJob = payload.new as Booking;
-                        setJobs(prev => [newJob, ...prev]);
+                        setJobs(prev => [payload.new as Booking, ...prev]);
                     }
                 )
                 .subscribe();
@@ -183,7 +224,7 @@ export default function ProviderJobFeedScreen() {
         jobId: string,
         newStatus: 'accepted' | 'declined'
     ) => {
-        if (actionLoading) return; // block concurrent actions
+        if (actionLoading) return;
 
         setActionLoading(jobId);
         try {
@@ -194,16 +235,59 @@ export default function ProviderJobFeedScreen() {
 
             if (updateError) throw new Error(updateError.message);
 
-            // Optimistic removal — card disappears instantly
-            setJobs(prev => prev.filter(j => j.id !== jobId));
+            // Optimistic removal for declined; update status for accepted
+            if (newStatus === 'declined') {
+                setJobs(prev => prev.filter(j => j.id !== jobId));
+            } else {
+                setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: newStatus } : j));
+            }
         } catch (err) {
             if (__DEV__) console.warn('[ProviderJobFeed] handleAction:', err);
-            // On failure: re-fetch to restore correct state
-            await fetchJobs(true);
+            await fetchJobs(true);  // re-fetch on failure to restore truth
         } finally {
             setActionLoading(null);
         }
     }, [actionLoading, fetchJobs]);
+
+    // ── PIN Verification — Start Job ──────────────────────────────────────────
+
+    const handlePinSubmit = useCallback(async (enteredPin: string) => {
+        if (!pinModalJob || pinLoading) return;
+
+        // B3 fix: null PIN guard — booking predates Sprint 4.2 schema
+        if (!pinModalJob.doorstep_pin) {
+            setPinError('No PIN was set for this booking. Please contact the Seeker.');
+            return;
+        }
+
+        // Client-side PIN comparison
+        if (enteredPin !== pinModalJob.doorstep_pin) {
+            setPinError('Incorrect PIN. Please ask the Seeker to show their screen.');
+            return;
+        }
+
+        setPinLoading(true);
+        setPinError(null);
+
+        try {
+            const now = new Date().toISOString();
+            const { error: updateError } = await supabase
+                .from('bookings')
+                .update({ status: 'in_progress', started_at: now })
+                .eq('id', pinModalJob.id);
+
+            if (updateError) throw new Error(updateError.message);
+
+            // Optimistic: remove from "Active Jobs" section — job is now in progress
+            setJobs(prev => prev.filter(j => j.id !== pinModalJob!.id));
+            setPinModalJob(null);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to start job. Try again.';
+            setPinError(msg);
+        } finally {
+            setPinLoading(false);
+        }
+    }, [pinModalJob, pinLoading]);
 
     // ── Pull-to-refresh ───────────────────────────────────────────────────────
 
@@ -212,7 +296,17 @@ export default function ProviderJobFeedScreen() {
         fetchJobs(true);
     }, [fetchJobs]);
 
-    // ── Render ────────────────────────────────────────────────────────────────
+    // ── Section Header ────────────────────────────────────────────────────────
+
+    const renderSectionHeader = ({ section }: { section: Section }) => (
+        <View className="mx-4 mb-2 mt-1">
+            <Text className="text-xs font-bold text-text-secondary uppercase tracking-widest">
+                {section.title}
+            </Text>
+        </View>
+    );
+
+    // ── Empty State ───────────────────────────────────────────────────────────
 
     const renderEmpty = () => {
         if (loading) return null;
@@ -229,6 +323,8 @@ export default function ProviderJobFeedScreen() {
         );
     };
 
+    // ── Render ────────────────────────────────────────────────────────────────
+
     return (
         <SafeAreaView className="flex-1 bg-brand-surface">
             <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
@@ -238,7 +334,9 @@ export default function ProviderJobFeedScreen() {
                 <View>
                     <Text className="text-xl font-bold text-text-primary">Job Feed</Text>
                     <Text className="text-xs text-text-secondary mt-0.5">
-                        {jobs.length > 0 ? `${jobs.length} pending request${jobs.length > 1 ? 's' : ''}` : 'Live updates enabled'}
+                        {jobs.length > 0
+                            ? `${pendingJobs.length} pending · ${activeJobs.length} active`
+                            : 'Live updates enabled'}
                     </Text>
                 </View>
 
@@ -263,20 +361,26 @@ export default function ProviderJobFeedScreen() {
                     <Text className="text-text-secondary text-sm mt-3">Loading bookings…</Text>
                 </View>
             ) : (
-                <FlatList
-                    data={jobs}
+                <SectionList
+                    sections={sections}
                     keyExtractor={item => item.id}
                     renderItem={({ item }) => (
                         <JobCard
                             job={item}
                             onAccept={id => handleAction(id, 'accepted')}
                             onDecline={id => handleAction(id, 'declined')}
+                            onStartJob={job => {
+                                setPinError(null);
+                                setPinModalJob(job);
+                            }}
                             actionLoading={actionLoading}
                         />
                     )}
+                    renderSectionHeader={renderSectionHeader}
                     ListEmptyComponent={renderEmpty}
                     contentContainerStyle={{ paddingTop: 8, paddingBottom: 32, flexGrow: 1 }}
                     showsVerticalScrollIndicator={false}
+                    stickySectionHeadersEnabled={false}
                     refreshControl={
                         <RefreshControl
                             refreshing={refreshing}
@@ -295,6 +399,18 @@ export default function ProviderJobFeedScreen() {
             >
                 <Text className="text-text-secondary text-sm">Sign Out</Text>
             </TouchableOpacity>
+
+            {/* PIN Modal — Doorstep PIN Handshake (Sprint 4.2) */}
+            <PinModal
+                visible={pinModalJob !== null}
+                onSubmit={handlePinSubmit}
+                onCancel={() => {
+                    setPinModalJob(null);
+                    setPinError(null);
+                }}
+                error={pinError}
+                loading={pinLoading}
+            />
         </SafeAreaView>
     );
 }

@@ -10,7 +10,6 @@ import {
     Linking,
     Platform,
     KeyboardAvoidingView,
-    Alert,
 } from 'react-native';
 import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -49,6 +48,15 @@ interface Provider {
     dist_meters: number;
 }
 
+// Sprint 4.2 — active booking the seeker is currently tracking
+interface ActiveBooking {
+    id: string;
+    status: 'pending' | 'accepted' | 'in_progress';
+    doorstep_pin: string;
+    service_category: string;
+    provider_id: string;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function formatDistance(meters: number): string {
@@ -83,8 +91,12 @@ export default function SeekerMapDashboard() {
     const [isBooking, setIsBooking] = useState(false);
     const [bookingError, setBookingError] = useState<string | null>(null);
 
+    // Active booking tracker (Sprint 4.2)
+    const [activeBooking, setActiveBooking] = useState<ActiveBooking | null>(null);
+
     // Auth session — seeker_id source for booking INSERT
     const session = useSelector((state: RootState) => state.auth.session);
+    const userId = session?.user?.id ?? null;
 
     // Local filter — null-safe + case-insensitive service_category match
     const filteredProviders = providers.filter(p =>
@@ -95,6 +107,63 @@ export default function SeekerMapDashboard() {
     useEffect(() => {
         setBookingError(null);
     }, [selectedProvider]);
+
+    // ── Sprint 4.2: Restore active booking on mount + real-time UPDATE subscription ──
+
+    useEffect(() => {
+        if (!userId) return;
+
+        let isMounted = true;
+        let channel: ReturnType<typeof supabase.channel> | null = null;
+
+        const init = async () => {
+            // Restore active booking on cold start / app reload
+            // Include 'in_progress' so banner survives a mid-job reload (B5 fix)
+            const { data } = await supabase
+                .from('bookings')
+                .select('id, status, doorstep_pin, service_category, provider_id')
+                .eq('seeker_id', userId)
+                .in('status', ['pending', 'accepted', 'in_progress'])
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (data && isMounted) setActiveBooking(data as ActiveBooking);
+
+            if (!isMounted) return;
+
+            // Subscribe to status changes on the seeker's bookings
+            channel = supabase
+                .channel(`bookings-seeker-${userId}`)
+                .on(
+                    'postgres_changes',
+                    {
+                        event: 'UPDATE',
+                        schema: 'public',
+                        table: 'bookings',
+                        filter: `seeker_id=eq.${userId}`,
+                    },
+                    (payload) => {
+                        if (!isMounted) return;
+                        const updated = payload.new as ActiveBooking;
+                        // Remove banner if job is no longer active
+                        if (['declined', 'completed', 'cancelled'].includes(updated.status)) {
+                            setActiveBooking(null);
+                        } else {
+                            setActiveBooking(updated);
+                        }
+                    }
+                )
+                .subscribe();
+        };
+
+        void init();
+
+        return () => {
+            isMounted = false;
+            if (channel) void supabase.removeChannel(channel);
+        };
+    }, [userId]);
 
     // ── Step 1: Request foreground location permission and get coords ──────────
 
@@ -199,39 +268,43 @@ export default function SeekerMapDashboard() {
 
     // ── Handlers ─────────────────────────────────────────────────────────────
 
-    // ── Sprint 4.1: Book Now ─────────────────────────────────────────────────
+    // ── Sprint 4.1+4.2: Book Now ────────────────────────────────────────────────
 
     const handleBookNow = useCallback(async (provider: Provider) => {
-        if (isBooking || !session) return;
+        if (isBooking || !session || activeBooking) return; // block if already have an active job
 
         setIsBooking(true);
         setBookingError(null);
 
         try {
-            const { error } = await supabase.from('bookings').insert({
-                seeker_id: session.user.id,   // from Redux — no extra getUser() call
-                provider_id: provider.id,
-                service_category: provider.service_category,
-                price_per_hour: provider.price_per_hour,
-                // status defaults to 'pending' on the DB side via CHECK constraint
-            });
+            // Generate a cryptographically adequate 4-digit PIN
+            const doorstep_pin = Math.floor(1000 + Math.random() * 9000).toString();
+
+            const { data, error } = await supabase
+                .from('bookings')
+                .insert({
+                    seeker_id: session.user.id,
+                    provider_id: provider.id,
+                    service_category: provider.service_category,
+                    price_per_hour: provider.price_per_hour,
+                    doorstep_pin,
+                    // status defaults to 'pending' on DB side
+                })
+                .select('id, status, doorstep_pin, service_category, provider_id')
+                .single();
 
             if (error) throw new Error(error.message);
 
-            // Close sheet first, then alert — prevents Alert blocking sheet animation
+            // Set active booking — banner replaces search bar
+            setActiveBooking(data as ActiveBooking);
             setSelectedProvider(null);
-            Alert.alert(
-                'Booking Request Sent 📨',
-                'Your request is on its way. The provider will accept or decline shortly.'
-            );
         } catch (err) {
-            // Inline error inside bottom sheet — not via Alert (avoids blocking UX)
             const msg = err instanceof Error ? err.message : 'Booking failed. Please try again.';
             setBookingError(msg);
         } finally {
             setIsBooking(false);
         }
-    }, [isBooking, session]);
+    }, [isBooking, session, activeBooking]);
 
     const handleLogout = async () => {
         await supabase.auth.signOut();
@@ -281,57 +354,118 @@ export default function SeekerMapDashboard() {
                 ))}
             </MapView>
 
-            {/* ── Step 4: Floating top bar — real TextInput search + logout ── */}
+            {/* ── Step 4: Floating top bar — Active Job Banner OR Search bar ── */}
             <KeyboardAvoidingView
                 style={styles.topBarWrapper}
-                // 'padding' on iOS lifts the bar above keyboard; Android manages via WindowSoftInput
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             >
                 <View style={styles.topBar} className="px-4 pt-12 pb-2">
 
-                    {/* Search bar */}
-                    <View className="flex-1 flex-row items-center bg-brand-white rounded-lg px-3 py-2.5 border border-brand-border mr-3">
-                        <Text className="text-text-secondary text-sm mr-1.5">🔍</Text>
-
-                        <TextInput
-                            className="flex-1 text-text-primary text-sm p-0"
-                            placeholder="Search by category (e.g. Plumber)…"
-                            placeholderTextColor="#94A3B8"
-                            value={searchQuery}
-                            onChangeText={setSearchQuery}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            returnKeyType="search"
-                        />
-
-                        {/* isFetchingPins spinner — shown while RPC is in-flight */}
-                        {isFetchingPins && (
-                            <ActivityIndicator
-                                size="small"
-                                color="#64748B"
-                                style={{ marginLeft: 6 }}
-                            />
-                        )}
-
-                        {/* Clear (✕) button — only shown when query is non-empty */}
-                        {searchQuery.length > 0 && !isFetchingPins && (
+                    {activeBooking ? (
+                        // ── Active Job Banner (Sprint 4.2) ──
+                        <View className="flex-1 bg-brand-white rounded-2xl px-4 py-3 border border-brand-border">
+                            {/* Status row */}
+                            {activeBooking.status === 'pending' && (
+                                <>
+                                    <View className="flex-row items-center mb-1">
+                                        <View className="w-2 h-2 rounded-full bg-yellow-400 mr-2" />
+                                        <Text className="text-xs font-semibold text-text-secondary uppercase tracking-widest">
+                                            Active Job
+                                        </Text>
+                                    </View>
+                                    <Text className="text-base font-bold text-text-primary">
+                                        Waiting for Provider…
+                                    </Text>
+                                    <Text className="text-xs text-text-secondary mt-0.5">
+                                        {activeBooking.service_category}
+                                    </Text>
+                                </>
+                            )}
+                            {activeBooking.status === 'accepted' && (
+                                <>
+                                    <View className="flex-row items-center mb-1">
+                                        <View className="w-2 h-2 rounded-full bg-brand-emerald mr-2" />
+                                        <Text className="text-xs font-semibold text-text-secondary uppercase tracking-widest">
+                                            Provider on the Way!
+                                        </Text>
+                                    </View>
+                                    <Text className="text-sm text-text-secondary mb-2">Show this PIN at the door:</Text>
+                                    <View className="bg-brand-surface rounded-xl px-4 py-3 items-center">
+                                        <Text style={{ fontSize: 28, fontWeight: '800', letterSpacing: 14, color: '#0F172A' }}>
+                                            {activeBooking.doorstep_pin}
+                                        </Text>
+                                    </View>
+                                </>
+                            )}
+                            {activeBooking.status === 'in_progress' && (
+                                <>
+                                    <View className="flex-row items-center mb-1">
+                                        <View className="w-2 h-2 rounded-full bg-brand-navy mr-2" />
+                                        <Text className="text-xs font-semibold text-text-secondary uppercase tracking-widest">
+                                            Job In Progress
+                                        </Text>
+                                    </View>
+                                    <Text className="text-base font-bold text-text-primary">
+                                        {activeBooking.service_category} underway
+                                    </Text>
+                                </>
+                            )}
+                            {/* Exit button — always accessible from banner (B2 fix) */}
                             <TouchableOpacity
-                                onPress={() => setSearchQuery('')}
-                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                className="mt-3 py-1 items-center"
+                                onPress={handleLogout}
+                                activeOpacity={0.7}
                             >
-                                <Text className="text-text-secondary text-base ml-2">✕</Text>
+                                <Text className="text-xs text-text-secondary">Sign Out</Text>
                             </TouchableOpacity>
-                        )}
-                    </View>
+                        </View>
+                    ) : (
+                        // ── Normal Search Bar ──
+                        <>
+                            <View className="flex-1 flex-row items-center bg-brand-white rounded-lg px-3 py-2.5 border border-brand-border mr-3">
+                                <Text className="text-text-secondary text-sm mr-1.5">🔍</Text>
 
-                    {/* Logout */}
-                    <TouchableOpacity
-                        className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center"
-                        onPress={handleLogout}
-                        activeOpacity={0.85}
-                    >
-                        <Text className="text-brand-white text-xs font-semibold">Exit</Text>
-                    </TouchableOpacity>
+                                <TextInput
+                                    className="flex-1 text-text-primary text-sm p-0"
+                                    placeholder="Search by category (e.g. Plumber)…"
+                                    placeholderTextColor="#94A3B8"
+                                    value={searchQuery}
+                                    onChangeText={setSearchQuery}
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    returnKeyType="search"
+                                />
+
+                                {/* isFetchingPins spinner — shown while RPC is in-flight */}
+                                {isFetchingPins && (
+                                    <ActivityIndicator
+                                        size="small"
+                                        color="#64748B"
+                                        style={{ marginLeft: 6 }}
+                                    />
+                                )}
+
+                                {/* Clear (✕) button — only shown when query is non-empty */}
+                                {searchQuery.length > 0 && !isFetchingPins && (
+                                    <TouchableOpacity
+                                        onPress={() => setSearchQuery('')}
+                                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    >
+                                        <Text className="text-text-secondary text-base ml-2">✕</Text>
+                                    </TouchableOpacity>
+                                )}
+                            </View>
+
+                            {/* Logout */}
+                            <TouchableOpacity
+                                className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center"
+                                onPress={handleLogout}
+                                activeOpacity={0.85}
+                            >
+                                <Text className="text-brand-white text-xs font-semibold">Exit</Text>
+                            </TouchableOpacity>
+                        </>
+                    )}
                 </View>
             </KeyboardAvoidingView>
 
@@ -407,20 +541,28 @@ export default function SeekerMapDashboard() {
                         </View>
                     )}
 
-                    {/* Book Now — wired to Supabase INSERT (Sprint 4.1) */}
-                    <TouchableOpacity
-                        className={`rounded-xl py-4 items-center justify-center ${isBooking ? 'bg-brand-border' : 'bg-brand-navy'
-                            }`}
-                        activeOpacity={0.85}
-                        disabled={isBooking}
-                        onPress={() => selectedProvider && handleBookNow(selectedProvider)}
-                    >
-                        {isBooking ? (
-                            <ActivityIndicator color="#FFFFFF" />
-                        ) : (
-                            <Text className="text-brand-white text-sm font-semibold">Book Now</Text>
-                        )}
-                    </TouchableOpacity>
+                    {/* Book Now — wired to Supabase INSERT (Sprint 4.1+4.2) */}
+                    {activeBooking ? (
+                        // B6 fix: clearly block re-booking with informative message
+                        <View className="bg-brand-surface rounded-xl py-4 px-4 items-center">
+                            <Text className="text-text-secondary text-sm text-center">
+                                You already have an active booking.
+                            </Text>
+                        </View>
+                    ) : (
+                        <TouchableOpacity
+                            className={`rounded-xl py-4 items-center justify-center ${isBooking ? 'bg-brand-border' : 'bg-brand-navy'}`}
+                            activeOpacity={0.85}
+                            disabled={isBooking}
+                            onPress={() => selectedProvider && handleBookNow(selectedProvider)}
+                        >
+                            {isBooking ? (
+                                <ActivityIndicator color="#FFFFFF" />
+                            ) : (
+                                <Text className="text-brand-white text-sm font-semibold">Book Now</Text>
+                            )}
+                        </TouchableOpacity>
+                    )}
                 </View>
             )}
 
