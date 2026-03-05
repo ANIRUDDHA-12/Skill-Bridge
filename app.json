@@ -4,6 +4,11 @@
     "slug": "SkillBridge",
     "version": "1.0.0",
     "orientation": "portrait",
+    "extra": {
+      "eas": {
+        "projectId": "f2c6e5d0-7d96-402d-b68a-ecb46000e15e"
+      }
+    },
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
