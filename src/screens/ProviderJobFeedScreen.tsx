@@ -8,12 +8,14 @@ import {
     StatusBar,
     RefreshControl,
     Alert,
+    Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store/store';
 import { supabase } from '../lib/supabase';
 import PinModal from '../components/PinModal';
+import * as Location from 'expo-location';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -148,10 +150,33 @@ export default function ProviderJobFeedScreen() {
     const [error, setError] = useState<string | null>(null);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+    // Online/Offline status (Sprint 5.2)
+    const [isOnline, setIsOnline] = useState(false);
+    const [isOnlineLoading, setIsOnlineLoading] = useState(true);
+
     // PIN modal state (Sprint 4.2)
     const [pinModalJob, setPinModalJob] = useState<Booking | null>(null);   // which job's PIN is being entered
     const [pinError, setPinError] = useState<string | null>(null);
     const [pinLoading, setPinLoading] = useState(false);
+
+    // ── Fetch provider status on mount ────────────────────────────────────────
+    
+    useEffect(() => {
+        if (!userId) return;
+        let isMounted = true;
+        (async () => {
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('is_active')
+                .eq('id', userId)
+                .single();
+            if (isMounted) {
+                if (data) setIsOnline(data.is_active);
+                setIsOnlineLoading(false);
+            }
+        })();
+        return () => { isMounted = false; };
+    }, [userId]);
 
     // ── Derived sections for SectionList (memoized — B4 fix, Sprint 4.3: +in_progress) ──
 
@@ -339,6 +364,87 @@ export default function ProviderJobFeedScreen() {
         );
     }, [fetchJobs]);
 
+    // ── Provider GPS Broadcaster (Sprint 5.2) ──────────────────────────────────
+
+    const handleToggleOnline = async (value: boolean) => {
+        if (!userId) return;
+        const previousState = isOnline;
+        setIsOnline(value); // Optimistic UI update
+
+        try {
+            const { error } = await supabase
+                .from('profiles')
+                .update({ is_active: value })
+                .eq('id', userId);
+            if (error) throw new Error(error.message);
+        } catch (err) {
+            if (__DEV__) console.warn('Failed to update status:', err);
+            setIsOnline(previousState); // Revert on failure
+            Alert.alert('Update Failed', 'Could not sync status. Please try again.');
+        }
+    };
+
+    useEffect(() => {
+        let locationSubscription: Location.LocationSubscription | null = null;
+        let isSubscribed = true; // The Guard Variable
+
+        const startLocationTracking = async () => {
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert('Permission Denied', 'Please grant location access to go online.');
+                handleToggleOnline(false); // Snap switch back
+                return;
+            }
+
+            // If user went offline while waiting for permissions
+            if (!isSubscribed) return;
+
+            try {
+                const sub = await Location.watchPositionAsync(
+                    {
+                        accuracy: Location.Accuracy.Balanced,
+                        distanceInterval: 50, // Only push changes > 50 meters
+                        timeInterval: 60000, // Limit interval to 1 minute
+                    },
+                    async (loc) => {
+                        const { latitude, longitude } = loc.coords;
+                        const { error } = await supabase.rpc('set_provider_location', {
+                            provider_id: userId,
+                            lat: latitude,
+                            lng: longitude,
+                        });
+                        if (error && __DEV__) {
+                            console.warn('Failed to broadcast location:', error);
+                        }
+                    }
+                );
+
+                // POST-RESOLVE KILL SWITCH:
+                // Check if user toggled switch off *while* watcher was booting up
+                if (isSubscribed) {
+                    locationSubscription = sub;
+                } else {
+                    sub.remove();
+                }
+            } catch (err) {
+                if (__DEV__) console.warn('Location tracking failed to start:', err);
+            }
+        };
+
+        // Only start tracking if the toggle says we are online
+        if (isOnline && userId) {
+            void startLocationTracking();
+        }
+
+        // CLEANUP: Unmounts OR isOnline toggles false
+        return () => {
+            isSubscribed = false;
+            if (locationSubscription) {
+                locationSubscription.remove();
+            }
+        };
+    }, [isOnline, userId]);
+
     // ── Pull-to-refresh ───────────────────────────────────────────────────────
 
     const handleRefresh = useCallback(() => {
@@ -390,11 +496,21 @@ export default function ProviderJobFeedScreen() {
                     </Text>
                 </View>
 
-                {/* Live indicator */}
-                <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded-full bg-brand-emerald mr-1.5" />
-                    <Text className="text-xs text-text-secondary">Live</Text>
-                </View>
+                {/* Online/Offline Toggle */}
+                {!isOnlineLoading && (
+                    <View className="flex-row items-center">
+                        <Text className={`text-sm font-semibold mr-2 ${isOnline ? 'text-brand-emerald' : 'text-text-secondary'}`}>
+                            {isOnline ? 'Online' : 'Offline'}
+                        </Text>
+                        <Switch
+                            value={isOnline}
+                            onValueChange={handleToggleOnline}
+                            trackColor={{ false: '#CBD5E1', true: '#10B981' }}
+                            thumbColor="#FFFFFF"
+                            disabled={actionLoading !== null}
+                        />
+                    </View>
+                )}
             </View>
 
             {/* Error banner */}
