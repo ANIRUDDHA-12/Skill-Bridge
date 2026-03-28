@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View,
     Text,
@@ -17,17 +17,13 @@ import { useDispatch } from 'react-redux';
 import { AppDispatch } from '../store/store';
 import { setProfileComplete } from '../store/authSlice';
 
-// ── Service category options ──────────────────────────────────────────────────
-const SERVICE_CATEGORIES = [
-    'Plumber',
-    'Electrician',
-    'Carpenter',
-    'Painter',
-    'Cleaner',
-    'Mechanic',
-    'Tailor',
-    'Other',
-];
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ServiceCategory {
+    id: string;
+    name: string;
+    icon: string;
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -39,6 +35,34 @@ export default function ProviderSetupScreen() {
     const [pricePerHour, setPricePerHour] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Sprint 5.1: Dynamic categories from DB
+    const [categories, setCategories] = useState<ServiceCategory[]>([]);
+    const [categoriesLoading, setCategoriesLoading] = useState(true);
+    const [categoriesError, setCategoriesError] = useState<string | null>(null);
+
+    // ── Fetch categories on mount ────────────────────────────────────────────
+
+    const fetchCategories = async () => {
+        setCategoriesLoading(true);
+        setCategoriesError(null);
+        try {
+            const { data, error: dbError } = await supabase
+                .from('service_categories')
+                .select('id, name, icon')
+                .order('name');
+            if (dbError) throw new Error(dbError.message);
+            setCategories((data as ServiceCategory[]) ?? []);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to load categories.';
+            setCategoriesError(msg);
+            if (__DEV__) console.warn('[ProviderSetup] fetchCategories:', msg);
+        } finally {
+            setCategoriesLoading(false);
+        }
+    };
+
+    useEffect(() => { void fetchCategories(); }, []);
 
     // ── Validation ────────────────────────────────────────────────────────────
 
@@ -163,33 +187,48 @@ export default function ProviderSetupScreen() {
                         maxLength={60}
                     />
 
-                    {/* Service Category — chip selector */}
+                    {/* Service Category — dynamic chip selector (Sprint 5.1) */}
                     <Text className="text-sm font-semibold text-text-primary mb-3">
                         Service Category
                     </Text>
-                    <View className="flex-row flex-wrap mb-6">
-                        {SERVICE_CATEGORIES.map(cat => {
-                            const selected = selectedCategory === cat;
-                            return (
-                                <TouchableOpacity
-                                    key={cat}
-                                    onPress={() => setSelectedCategory(cat)}
-                                    className={`mr-2 mb-2 px-4 py-2 rounded-full border ${selected
-                                        ? 'bg-brand-navy border-brand-navy'
-                                        : 'bg-brand-surface border-brand-border'
-                                        }`}
-                                    activeOpacity={0.75}
-                                >
-                                    <Text
-                                        className={`text-sm font-medium ${selected ? 'text-brand-white' : 'text-text-secondary'
+
+                    {categoriesLoading ? (
+                        <View className="items-center py-6 mb-6">
+                            <ActivityIndicator size="small" color="#0F172A" />
+                            <Text className="text-xs text-text-secondary mt-2">Loading categories…</Text>
+                        </View>
+                    ) : categoriesError ? (
+                        <View className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-6">
+                            <Text className="text-red-600 text-sm mb-2">{categoriesError}</Text>
+                            <TouchableOpacity onPress={fetchCategories} activeOpacity={0.75}>
+                                <Text className="text-brand-navy text-sm font-semibold">Tap to Retry</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        <View className="flex-row flex-wrap mb-6">
+                            {categories.map(cat => {
+                                const selected = selectedCategory === cat.name;
+                                return (
+                                    <TouchableOpacity
+                                        key={cat.id}
+                                        onPress={() => setSelectedCategory(cat.name)}
+                                        className={`mr-2 mb-2 px-4 py-2 rounded-full border ${selected
+                                            ? 'bg-brand-navy border-brand-navy'
+                                            : 'bg-brand-surface border-brand-border'
                                             }`}
+                                        activeOpacity={0.75}
                                     >
-                                        {cat}
-                                    </Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </View>
+                                        <Text
+                                            className={`text-sm font-medium ${selected ? 'text-brand-white' : 'text-text-secondary'
+                                                }`}
+                                        >
+                                            {cat.icon} {cat.name}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+                    )}
 
                     {/* Price Per Hour */}
                     <Text className="text-sm font-semibold text-text-primary mb-2">

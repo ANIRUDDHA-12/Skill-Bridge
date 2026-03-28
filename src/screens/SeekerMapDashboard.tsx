@@ -2,14 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     View,
     Text,
-    TextInput,
+    ScrollView,
     TouchableOpacity,
     ActivityIndicator,
     StyleSheet,
     StatusBar,
     Linking,
     Platform,
-    KeyboardAvoidingView,
     Modal,
 } from 'react-native';
 import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
@@ -47,6 +46,13 @@ interface Provider {
     lat: number;
     lng: number;
     dist_meters: number;
+}
+
+// Sprint 5.1 — service category from DB
+interface ServiceCategory {
+    id: string;
+    name: string;
+    icon: string;
 }
 
 // Sprint 4.2+4.3 — active booking the seeker is currently tracking
@@ -105,8 +111,9 @@ export default function SeekerMapDashboard() {
     const [providers, setProviders] = useState<Provider[]>([]);
     const [isFetchingPins, setIsFetchingPins] = useState(false);
 
-    // Smart search (Sprint 3.2)
-    const [searchQuery, setSearchQuery] = useState('');
+    // Sprint 5.1: Category chips replace text search
+    const [categories, setCategories] = useState<ServiceCategory[]>([]);
+    const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
     // Bottom sheet — selected provider detail (Sprint 3.3)
     const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null);
@@ -122,10 +129,10 @@ export default function SeekerMapDashboard() {
     const session = useSelector((state: RootState) => state.auth.session);
     const userId = session?.user?.id ?? null;
 
-    // Local filter — null-safe + case-insensitive service_category match
-    const filteredProviders = providers.filter(p =>
-        (p.service_category ?? '').toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    // Sprint 5.1: Exact category filter (replaces fuzzy text search)
+    const filteredProviders = selectedCategory
+        ? providers.filter(p => p.service_category === selectedCategory)
+        : providers;
 
     // Clear booking error whenever bottom sheet opens on a new provider or closes
     useEffect(() => {
@@ -189,6 +196,18 @@ export default function SeekerMapDashboard() {
             if (channel) void supabase.removeChannel(channel);
         };
     }, [userId]);
+
+    // ── Sprint 5.1: Fetch categories on mount ────────────────────────────────────
+
+    useEffect(() => {
+        (async () => {
+            const { data } = await supabase
+                .from('service_categories')
+                .select('id, name, icon')
+                .order('name');
+            if (data) setCategories(data as ServiceCategory[]);
+        })();
+    }, []);
 
     // ── Step 1: Request foreground location permission and get coords ──────────
 
@@ -385,14 +404,11 @@ export default function SeekerMapDashboard() {
                 ))}
             </MapView>
 
-            {/* ── Step 4: Floating top bar — Active Job Banner OR Search bar ── */}
-            <KeyboardAvoidingView
-                style={styles.topBarWrapper}
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            >
+            {/* ── Step 4: Floating top bar — Active Job Banner OR Category Chips ── */}
+            <View style={styles.topBarWrapper}>
                 <View style={styles.topBar} className="px-4 pt-12 pb-2">
 
-                    {activeBooking ? (
+                    {activeBooking && activeBooking.status !== 'completed' ? (
                         // ── Active Job Banner (Sprint 4.2) ──
                         <View className="flex-1 bg-brand-white rounded-2xl px-4 py-3 border border-brand-border">
                             {/* Status row */}
@@ -450,62 +466,91 @@ export default function SeekerMapDashboard() {
                                 <Text className="text-xs text-text-secondary">Sign Out</Text>
                             </TouchableOpacity>
                         </View>
-                    ) : (
-                        // ── Normal Search Bar ──
-                        <>
-                            <View className="flex-1 flex-row items-center bg-brand-white rounded-lg px-3 py-2.5 border border-brand-border mr-3">
-                                <Text className="text-text-secondary text-sm mr-1.5">🔍</Text>
+                    ) : !activeBooking ? (
+                        // ── Sprint 5.1: Category Chips (replace search bar) ──
+                        <View className="flex-1 flex-row items-center">
+                            <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                contentContainerStyle={{ paddingRight: 8 }}
+                                className="flex-1"
+                            >
+                                {/* "All" chip — selected when no category filter (D5) */}
+                                <TouchableOpacity
+                                    onPress={() => setSelectedCategory(null)}
+                                    className={`mr-2 px-4 py-2 rounded-full border ${
+                                        selectedCategory === null
+                                            ? 'bg-brand-navy border-brand-navy'
+                                            : 'bg-brand-white border-brand-border'
+                                    }`}
+                                    activeOpacity={0.75}
+                                >
+                                    <Text className={`text-sm font-medium ${
+                                        selectedCategory === null ? 'text-brand-white' : 'text-text-primary'
+                                    }`}>
+                                        🏠 All
+                                    </Text>
+                                </TouchableOpacity>
 
-                                <TextInput
-                                    className="flex-1 text-text-primary text-sm p-0"
-                                    placeholder="Search by category (e.g. Plumber)…"
-                                    placeholderTextColor="#94A3B8"
-                                    value={searchQuery}
-                                    onChangeText={setSearchQuery}
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    returnKeyType="search"
-                                />
-
-                                {/* isFetchingPins spinner — shown while RPC is in-flight */}
-                                {isFetchingPins && (
-                                    <ActivityIndicator
-                                        size="small"
-                                        color="#64748B"
-                                        style={{ marginLeft: 6 }}
-                                    />
-                                )}
-
-                                {/* Clear (✕) button — only shown when query is non-empty */}
-                                {searchQuery.length > 0 && !isFetchingPins && (
-                                    <TouchableOpacity
-                                        onPress={() => setSearchQuery('')}
-                                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                    >
-                                        <Text className="text-text-secondary text-base ml-2">✕</Text>
-                                    </TouchableOpacity>
-                                )}
-                            </View>
+                                {/* Dynamic category chips */}
+                                {categories.map(cat => {
+                                    const selected = selectedCategory === cat.name;
+                                    return (
+                                        <TouchableOpacity
+                                            key={cat.id}
+                                            onPress={() => setSelectedCategory(
+                                                selected ? null : cat.name
+                                            )}
+                                            className={`mr-2 px-4 py-2 rounded-full border ${
+                                                selected
+                                                    ? 'bg-brand-navy border-brand-navy'
+                                                    : 'bg-brand-white border-brand-border'
+                                            }`}
+                                            activeOpacity={0.75}
+                                        >
+                                            <Text className={`text-sm font-medium ${
+                                                selected ? 'text-brand-white' : 'text-text-primary'
+                                            }`}>
+                                                {cat.icon} {cat.name}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </ScrollView>
 
                             {/* Logout */}
                             <TouchableOpacity
-                                className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center"
+                                className="bg-brand-navy rounded-lg px-4 py-3 items-center justify-center ml-2"
                                 onPress={handleLogout}
                                 activeOpacity={0.85}
                             >
                                 <Text className="text-brand-white text-xs font-semibold">Exit</Text>
                             </TouchableOpacity>
-                        </>
-                    )}
+                        </View>
+                    ) : null}
                 </View>
-            </KeyboardAvoidingView>
+            </View>
 
-            {/* Provider count badge — visible once pins load */}
+            {/* Provider count badge — visible once pins load (Sprint 5.1: shows loading state) */}
             {!gpsLoading && !permissionDenied && providers.length > 0 && (
                 <View style={styles.pinCountBadge} className="bg-brand-emerald rounded-full px-3 py-1">
                     <Text className="text-brand-white text-xs font-semibold">
-                        {filteredProviders.length}{' '}
-                        {filteredProviders.length === 1 ? 'provider' : 'providers'} nearby
+                        {isFetchingPins ? 'Loading…' : (
+                            `${filteredProviders.length} ${filteredProviders.length === 1 ? 'provider' : 'providers'} nearby`
+                        )}
+                    </Text>
+                </View>
+            )}
+
+            {/* ── Sprint 5.1: Zero Results empty state ── */}
+            {selectedCategory && filteredProviders.length === 0 && !gpsLoading && !isFetchingPins && (
+                <View style={styles.errorCard} className="mx-6 bg-brand-surface rounded-2xl p-6 items-center">
+                    <Text className="text-3xl mb-3">🔍</Text>
+                    <Text className="text-base font-bold text-text-primary text-center mb-2">
+                        No {selectedCategory}s found within 5km
+                    </Text>
+                    <Text className="text-sm text-text-secondary text-center leading-5">
+                        Try a different category or check back later.
                     </Text>
                 </View>
             )}
