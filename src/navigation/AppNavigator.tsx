@@ -10,6 +10,7 @@ import OtpScreen from '../screens/OtpScreen';
 import RoleSelectionScreen from '../screens/RoleSelectionScreen';
 import SeekerMapDashboard from '../screens/SeekerMapDashboard';
 import ProviderSetupScreen from '../screens/ProviderSetupScreen';
+import ProviderKYCScreen from '../screens/ProviderKYCScreen';
 import ProviderJobFeedScreen from '../screens/ProviderJobFeedScreen';
 
 // ── Typed param lists per stack ──
@@ -31,7 +32,12 @@ export type ProviderSetupStackParamList = {
     ProviderSetup: undefined;
 };
 
-// Provider who HAS completed setup
+// Provider who has completed setup but NOT finished KYC
+export type ProviderKYCStackParamList = {
+    ProviderKYC: undefined;
+};
+
+// Provider who HAS completed setup + KYC
 export type ProviderStackParamList = {
     ProviderJobFeed: undefined;
 };
@@ -41,6 +47,7 @@ const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 const SetupStack = createNativeStackNavigator<SetupStackParamList>();
 const SeekerStack = createNativeStackNavigator<SeekerStackParamList>();
 const ProviderSetupStack = createNativeStackNavigator<ProviderSetupStackParamList>();
+const ProviderKYCStack = createNativeStackNavigator<ProviderKYCStackParamList>();
 const ProviderStack = createNativeStackNavigator<ProviderStackParamList>();
 
 const SCREEN_OPTIONS = {
@@ -83,7 +90,16 @@ function ProviderSetupNavigator() {
     );
 }
 
-// Shown to providers who have completed setup
+// Shown to providers who completed setup but haven't submitted KYC yet
+function ProviderKYCNavigator() {
+    return (
+        <ProviderKYCStack.Navigator screenOptions={{ ...SCREEN_OPTIONS, animation: 'slide_from_right' }}>
+            <ProviderKYCStack.Screen name="ProviderKYC" component={ProviderKYCScreen} />
+        </ProviderKYCStack.Navigator>
+    );
+}
+
+// Shown to providers who have completed setup + KYC
 function ProviderNavigator() {
     return (
         <ProviderStack.Navigator screenOptions={{ ...SCREEN_OPTIONS, contentStyle: { backgroundColor: '#F8FAFC' } }}>
@@ -94,7 +110,7 @@ function ProviderNavigator() {
 
 // ── Root: reads Redux and renders the correct stack ──
 export default function AppNavigator() {
-    const { session, accountType, profileComplete, isLoading } = useSelector(
+    const { session, accountType, profileComplete, kycComplete, isLoading } = useSelector(
         (state: RootState) => state.auth
     );
 
@@ -110,6 +126,7 @@ export default function AppNavigator() {
     if (!session) return <AuthNavigator />;
     if (!accountType) return <SetupNavigator />;        // pick role
     if (accountType === 'seeker') return <SeekerNavigator />;
-    if (accountType === 'provider' && !profileComplete) return <ProviderSetupNavigator />; // fill profile
-    return <ProviderNavigator />;                                                          // dashboard
+    if (accountType === 'provider' && !profileComplete) return <ProviderSetupNavigator />;  // fill profile
+    if (accountType === 'provider' && !kycComplete) return <ProviderKYCNavigator />;        // submit KYC
+    return <ProviderNavigator />;                                                            // dashboard
 }

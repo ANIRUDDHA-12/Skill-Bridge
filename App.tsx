@@ -8,7 +8,7 @@ import { Provider, useDispatch } from 'react-redux';
 import { store, AppDispatch } from './src/store/store';
 import AppNavigator from './src/navigation/AppNavigator';
 import { supabase } from './src/lib/supabase';
-import { setSession, setAccountType, setProfileComplete, clearAuth, setLoading } from './src/store/authSlice';
+import { setSession, setAccountType, setProfileComplete, setKycComplete, clearAuth, setLoading } from './src/store/authSlice';
 
 /**
  * AppInner — lives inside <Provider> so it can access Redux dispatch.
@@ -27,7 +27,7 @@ function AppInner() {
           // Query profile BEFORE dispatching — prevents routing flash
           const { data: profile } = await supabase
             .from('profiles')
-            .select('account_type, display_name')
+            .select('account_type, display_name, kyc_status')
             .eq('id', session.user.id)
             .single();
 
@@ -38,6 +38,9 @@ function AppInner() {
           }
           // profileComplete: true only when provider has completed setup (display_name set)
           dispatch(setProfileComplete(!!profile?.display_name));
+          // kycComplete: true when kyc_status is 'pending' or 'verified' (they submitted docs)
+          const kycDone = profile?.kyc_status === 'pending' || profile?.kyc_status === 'verified';
+          dispatch(setKycComplete(kycDone));
         } else {
           // SIGNED_OUT or expired session
           dispatch(clearAuth());
