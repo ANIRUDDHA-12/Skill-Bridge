@@ -10,6 +10,8 @@ import {
     Linking,
     Platform,
     Modal,
+    Alert,
+    TextInput
 } from 'react-native';
 import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -46,6 +48,8 @@ interface Provider {
     lat: number;
     lng: number;
     dist_meters: number;
+    average_rating: number;
+    review_count: number;
 }
 
 // Sprint 5.1 — service category from DB
@@ -124,6 +128,12 @@ export default function SeekerMapDashboard() {
 
     // Active booking tracker (Sprint 4.2)
     const [activeBooking, setActiveBooking] = useState<ActiveBooking | null>(null);
+
+    // Review / Rating state (Sprint 6.1)
+    const [showRatingModal, setShowRatingModal] = useState(false);
+    const [ratingValue, setRatingValue] = useState(0); // 1-5 scale
+    const [reviewComment, setReviewComment] = useState('');
+    const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
     // Auth session — seeker_id source for booking INSERT
     const session = useSelector((state: RootState) => state.auth.session);
@@ -311,6 +321,37 @@ export default function SeekerMapDashboard() {
     }, [location, fetchNearbyProviders]);
 
     // ── Handlers ─────────────────────────────────────────────────────────────
+
+    // ── Sprint 6.1: Submit Review ───────────────────────────────────────────────
+
+    const handleSubmitReview = async () => {
+        if (!activeBooking || !userId || ratingValue === 0) return;
+        setIsSubmittingReview(true);
+
+        try {
+            const { error } = await supabase.from('reviews').insert({
+                booking_id: activeBooking.id,
+                reviewer_id: userId,
+                provider_id: activeBooking.provider_id,
+                rating: ratingValue,
+                comment: reviewComment.trim() || null,
+            });
+
+            if (error) throw new Error(error.message);
+
+            // Success — Cleanup & Return to Map
+            setRatingValue(0);
+            setReviewComment('');
+            setShowRatingModal(false);
+            setActiveBooking(null);
+            Alert.alert("Thank you!", "Your review has been saved.");
+        } catch (err) {
+            if (__DEV__) console.warn('Review submit error:', err);
+            Alert.alert("Submission Failed", "Could not submit your review. Please try again.");
+        } finally {
+            setIsSubmittingReview(false);
+        }
+    };
 
     // ── Sprint 4.1+4.2: Book Now ────────────────────────────────────────────────
 
@@ -586,6 +627,23 @@ export default function SeekerMapDashboard() {
                     <Text className="text-xl font-bold text-text-primary mt-3 mb-1">
                         {selectedProvider.display_name ?? 'Unknown Provider'}
                     </Text>
+
+                    {/* Sprint 6.1: Ratings Display */}
+                    <View className="mb-3">
+                        {(!selectedProvider.review_count || selectedProvider.review_count === 0) ? (
+                            <Text className="text-sm font-medium text-text-secondary italic">
+                                ⭐ New Provider
+                            </Text>
+                        ) : (
+                            <Text className="text-sm font-bold text-[#EAB308]">
+                                ⭐ {selectedProvider.average_rating.toFixed(1)}{' '}
+                                <Text className="font-normal text-text-secondary ml-1">
+                                    ({selectedProvider.review_count} {selectedProvider.review_count === 1 ? 'job' : 'jobs'})
+                                </Text>
+                            </Text>
+                        )}
+                    </View>
+
                     <View className="flex-row items-center mb-4">
                         <View className="bg-brand-navy rounded-full px-3 py-1 mr-2">
                             <Text className="text-brand-white text-xs font-medium">
@@ -652,79 +710,133 @@ export default function SeekerMapDashboard() {
                 return (
                     <Modal transparent animationType="fade" visible>
                         <View style={styles.fullOverlay} className="items-center justify-center px-6">
-                            <View className="bg-brand-white rounded-2xl p-6 w-full" style={{ maxWidth: 360 }}>
-                                {/* Header */}
-                                <Text className="text-2xl font-bold text-text-primary text-center mb-1">
-                                    ✅ Job Completed!
-                                </Text>
-                                <Text className="text-sm text-text-secondary text-center mb-5">
-                                    {activeBooking.service_category}
-                                </Text>
-
-                                {/* Divider */}
-                                <View className="border-b border-brand-border mb-4" />
-
-                                {receipt ? (
-                                    <>
-                                        {/* Time */}
-                                        <View className="flex-row justify-between mb-2">
-                                            <Text className="text-sm text-text-secondary">Time Elapsed</Text>
-                                            <Text className="text-sm font-semibold text-text-primary">
-                                                {receipt.totalMinutes < 60
-                                                    ? `${receipt.totalMinutes} min`
-                                                    : `${Math.floor(receipt.totalMinutes / 60)} hr ${receipt.totalMinutes % 60} min`}
-                                            </Text>
-                                        </View>
-
-                                        {/* Rate */}
-                                        <View className="flex-row justify-between mb-2">
-                                            <Text className="text-sm text-text-secondary">Hourly Rate</Text>
-                                            <Text className="text-sm font-semibold text-text-primary">
-                                                ₹{receipt.hourlyRate}/hr
-                                            </Text>
-                                        </View>
-
-                                        {/* Billable hours */}
-                                        <View className="flex-row justify-between mb-4">
-                                            <Text className="text-sm text-text-secondary">Billable Hours</Text>
-                                            <Text className="text-sm font-semibold text-text-primary">
-                                                {receipt.billableHours} hr{receipt.billableHours !== 1 ? 's' : ''}
-                                            </Text>
-                                        </View>
-
-                                        {/* Divider */}
-                                        <View className="border-b border-brand-border mb-4" />
-
-                                        {/* Total */}
-                                        <View className="flex-row justify-between items-baseline mb-2">
-                                            <Text className="text-base font-bold text-text-primary">Final Amount</Text>
-                                            <Text className="text-2xl font-bold text-text-primary">
-                                                ₹{receipt.totalAmount}
-                                            </Text>
-                                        </View>
-                                        <Text className="text-xs text-text-secondary text-center mt-1 mb-5">
-                                            Pay directly to Provider via Cash / UPI
-                                        </Text>
-                                    </>
-                                ) : (
-                                    <View className="mb-5">
-                                        <Text className="text-sm text-text-secondary text-center">
-                                            Duration unavailable — settle directly with the Provider.
-                                        </Text>
-                                    </View>
-                                )}
-
-                                {/* Close button — the loop reset */}
-                                <TouchableOpacity
-                                    className="bg-brand-navy rounded-xl py-4 items-center"
-                                    activeOpacity={0.85}
-                                    onPress={() => setActiveBooking(null)}
-                                >
-                                    <Text className="text-brand-white text-sm font-semibold">
-                                        Close & Return to Map
+                            {showRatingModal ? (
+                                <View className="bg-brand-white rounded-2xl p-6 w-full" style={{ maxWidth: 360 }}>
+                                    <Text className="text-2xl font-bold text-text-primary text-center mb-2">
+                                        Rate your Provider
                                     </Text>
-                                </TouchableOpacity>
-                            </View>
+                                    <Text className="text-sm text-text-secondary text-center mb-6">
+                                        How was your experience with your Provider?
+                                    </Text>
+
+                                    {/* Star Selector */}
+                                    <View className="flex-row justify-center mb-6">
+                                        {[1, 2, 3, 4, 5].map((star) => (
+                                            <TouchableOpacity key={star} onPress={() => setRatingValue(star)} activeOpacity={0.7} className="mx-1">
+                                                <Text className={`text-4xl ${ratingValue >= star ? 'opacity-100' : 'opacity-25 grayscale'}`}>
+                                                    ⭐
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+
+                                    {/* Comment Input */}
+                                    <TextInput
+                                        placeholder="Write an optional review..."
+                                        multiline
+                                        numberOfLines={3}
+                                        className="bg-brand-surface border border-brand-border rounded-xl p-4 text-text-primary mb-6"
+                                        value={reviewComment}
+                                        onChangeText={setReviewComment}
+                                        textAlignVertical="top"
+                                    />
+
+                                    {/* Submit Action */}
+                                    <TouchableOpacity
+                                        className={`rounded-xl py-4 mb-3 items-center ${ratingValue === 0 || isSubmittingReview ? 'bg-brand-border' : 'bg-brand-navy'}`}
+                                        disabled={ratingValue === 0 || isSubmittingReview}
+                                        onPress={handleSubmitReview}
+                                    >
+                                        {isSubmittingReview ? <ActivityIndicator color="#fff" /> : <Text className="text-brand-white font-semibold">Submit Review</Text>}
+                                    </TouchableOpacity>
+
+                                    {/* Skip Action */}
+                                    <TouchableOpacity
+                                        className="py-3 items-center"
+                                        disabled={isSubmittingReview}
+                                        onPress={() => {
+                                            setShowRatingModal(false);
+                                            setActiveBooking(null); // Return to map
+                                        }}
+                                    >
+                                        <Text className="text-text-secondary font-medium">Skip for now</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : (
+                                <View className="bg-brand-white rounded-2xl p-6 w-full" style={{ maxWidth: 360 }}>
+                                    {/* Header */}
+                                    <Text className="text-2xl font-bold text-text-primary text-center mb-1">
+                                        ✅ Job Completed!
+                                    </Text>
+                                    <Text className="text-sm text-text-secondary text-center mb-5">
+                                        {activeBooking.service_category}
+                                    </Text>
+
+                                    {/* Divider */}
+                                    <View className="border-b border-brand-border mb-4" />
+
+                                    {receipt ? (
+                                        <>
+                                            {/* Time */}
+                                            <View className="flex-row justify-between mb-2">
+                                                <Text className="text-sm text-text-secondary">Time Elapsed</Text>
+                                                <Text className="text-sm font-semibold text-text-primary">
+                                                    {receipt.totalMinutes < 60
+                                                        ? `${receipt.totalMinutes} min`
+                                                        : `${Math.floor(receipt.totalMinutes / 60)} hr ${receipt.totalMinutes % 60} min`}
+                                                </Text>
+                                            </View>
+
+                                            {/* Rate */}
+                                            <View className="flex-row justify-between mb-2">
+                                                <Text className="text-sm text-text-secondary">Hourly Rate</Text>
+                                                <Text className="text-sm font-semibold text-text-primary">
+                                                    ₹{receipt.hourlyRate}/hr
+                                                </Text>
+                                            </View>
+
+                                            {/* Billable hours */}
+                                            <View className="flex-row justify-between mb-4">
+                                                <Text className="text-sm text-text-secondary">Billable Hours</Text>
+                                                <Text className="text-sm font-semibold text-text-primary">
+                                                    {receipt.billableHours} hr{receipt.billableHours !== 1 ? 's' : ''}
+                                                </Text>
+                                            </View>
+
+                                            {/* Divider */}
+                                            <View className="border-b border-brand-border mb-4" />
+
+                                            {/* Total */}
+                                            <View className="flex-row justify-between items-baseline mb-2">
+                                                <Text className="text-base font-bold text-text-primary">Final Amount</Text>
+                                                <Text className="text-2xl font-bold text-text-primary">
+                                                    ₹{receipt.totalAmount}
+                                                </Text>
+                                            </View>
+                                            <Text className="text-xs text-text-secondary text-center mt-1 mb-5">
+                                                Pay directly to Provider via Cash / UPI
+                                            </Text>
+                                        </>
+                                    ) : (
+                                        <View className="mb-5">
+                                            <Text className="text-sm text-text-secondary text-center">
+                                                Duration unavailable — settle directly with the Provider.
+                                            </Text>
+                                        </View>
+                                    )}
+
+                                    {/* Close button — the loop reset */}
+                                    <TouchableOpacity
+                                        className="bg-brand-navy rounded-xl py-4 items-center"
+                                        activeOpacity={0.85}
+                                        onPress={() => setShowRatingModal(true)}
+                                    >
+                                        <Text className="text-brand-white text-sm font-semibold">
+                                            Continue
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+                            )}
                         </View>
                     </Modal>
                 );
