@@ -33,6 +33,7 @@ export default function ProviderSetupScreen() {
     const [displayName, setDisplayName] = useState('');
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
     const [pricePerHour, setPricePerHour] = useState('');
+    const [upiId, setUpiId] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +73,8 @@ export default function ProviderSetupScreen() {
         const price = parseFloat(pricePerHour);
         if (!pricePerHour || isNaN(price) || price <= 0)
             return 'Please enter a valid hourly rate (e.g. 200).';
+        if (!upiId || !/[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}/.test(upiId))
+            return 'Please enter a valid UPI ID (e.g., name@okaxis).';
         return null;
     };
 
@@ -118,6 +121,7 @@ export default function ProviderSetupScreen() {
                     display_name: displayName.trim(),
                     service_category: selectedCategory!,
                     price_per_hour: parseFloat(pricePerHour),
+                    upi_id: upiId.trim(),
                     is_active: true,
                     // Use raw PostGIS expression via rpc to set geography column
                 })
@@ -247,6 +251,20 @@ export default function ProviderSetupScreen() {
                         />
                         <Text className="text-text-secondary text-xs ml-1">/ hr</Text>
                     </View>
+
+                    {/* UPI ID */}
+                    <Text className="text-sm font-semibold text-text-primary mb-2">
+                        UPI ID (for receiving payments)
+                    </Text>
+                    <TextInput
+                        className="bg-brand-surface border border-brand-border rounded-xl px-4 py-3.5 text-text-primary text-sm mb-6"
+                        placeholder="e.g. name@okaxis"
+                        placeholderTextColor="#94A3B8"
+                        value={upiId}
+                        onChangeText={setUpiId}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                    />
 
                     {/* Error message */}
                     {error && (

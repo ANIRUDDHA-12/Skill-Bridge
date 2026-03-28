@@ -50,6 +50,7 @@ interface Provider {
     dist_meters: number;
     average_rating: number;
     review_count: number;
+    upi_id: string | null;
 }
 
 // Sprint 5.1 — service category from DB
@@ -69,6 +70,10 @@ interface ActiveBooking {
     price_per_hour: number | null;     // Sprint 4.3: needed for receipt
     started_at: string | null;         // Sprint 4.3: needed for receipt
     completed_at: string | null;       // Sprint 4.3: needed for receipt
+    provider?: {
+        display_name: string;
+        upi_id: string | null;
+    };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -134,6 +139,9 @@ export default function SeekerMapDashboard() {
     const [ratingValue, setRatingValue] = useState(0); // 1-5 scale
     const [reviewComment, setReviewComment] = useState('');
     const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+    
+    // Payments (Sprint 8.1)
+    const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
 
     // Auth session — seeker_id source for booking INSERT
     const session = useSelector((state: RootState) => state.auth.session);
@@ -162,14 +170,14 @@ export default function SeekerMapDashboard() {
             // Include 'in_progress' and 'completed' so banner/receipt survives reload
             const { data } = await supabase
                 .from('bookings')
-                .select('id, status, doorstep_pin, service_category, provider_id, price_per_hour, started_at, completed_at')
+                .select('id, status, doorstep_pin, service_category, provider_id, price_per_hour, started_at, completed_at, provider:profiles!provider_id(display_name, upi_id)')
                 .eq('seeker_id', userId)
                 .in('status', ['pending', 'accepted', 'in_progress', 'completed'])
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
 
-            if (data && isMounted) setActiveBooking(data as ActiveBooking);
+            if (data && isMounted) setActiveBooking(data as unknown as ActiveBooking);
 
             if (!isMounted) return;
 
@@ -192,7 +200,8 @@ export default function SeekerMapDashboard() {
                         if (['declined', 'cancelled'].includes(updated.status)) {
                             setActiveBooking(null);
                         } else {
-                            setActiveBooking(updated);
+                            // Sprint 8.1: Preserve provider payload relations over websockets
+                            setActiveBooking(prev => prev ? { ...updated, provider: prev.provider } : null);
                         }
                     }
                 )
@@ -353,6 +362,46 @@ export default function SeekerMapDashboard() {
         }
     };
 
+    // ── Sprint 8.1: UPI Checkout ───────────────────────────────────────────────
+
+    const handleOpenUPI = async (amount: number) => {
+        if (!activeBooking || !activeBooking.provider?.upi_id) {
+            Alert.alert("Missing UPI ID", "This provider has not set up their UPI ID for digital payments. Please settle directly.");
+            return;
+        }
+        const uri = `upi://pay?pa=${activeBooking.provider.upi_id}&pn=${activeBooking.provider.display_name}&am=${amount}&cu=INR&tn=Skill-Bridge%20Payment`;
+        const supported = await Linking.canOpenURL(uri);
+        if (supported) {
+            await Linking.openURL(uri);
+        } else {
+            Alert.alert('No UPI App Found', 'Please install a UPI app (Google Pay, PhonePe, Paytm, etc.) to use this feature.');
+        }
+    };
+
+    const handleMarkPaid = async (amount: number) => {
+        if (!activeBooking || !userId) return;
+        setIsSubmittingPayment(true);
+
+        try {
+            const { error } = await supabase.from('payments').insert({
+                booking_id: activeBooking.id,
+                payer_id: userId,
+                payee_id: activeBooking.provider_id,
+                amount
+            });
+
+            if (error) throw new Error(error.message);
+
+            // Hide receipt actions and show the rating modal immediately
+            setShowRatingModal(true);
+        } catch (err) {
+            if (__DEV__) console.warn('Payment logging error:', err);
+            Alert.alert("Error", "Could not verify payment mapping. Please try again.");
+        } finally {
+            setIsSubmittingPayment(false);
+        }
+    };
+
     // ── Sprint 4.1+4.2: Book Now ────────────────────────────────────────────────
 
     const handleBookNow = useCallback(async (provider: Provider) => {
@@ -382,11 +431,16 @@ export default function SeekerMapDashboard() {
 
             // Set active booking — banner replaces search bar
             // Include price_per_hour for future receipt (Sprint 4.3)
+            // Include Provider deep reference mapping (Sprint 8.1)
             setActiveBooking({
                 ...(data as ActiveBooking),
                 price_per_hour: provider.price_per_hour,
                 started_at: null,
                 completed_at: null,
+                provider: {
+                    display_name: provider.display_name,
+                    upi_id: provider.upi_id
+                }
             });
             setSelectedProvider(null);
         } catch (err) {
@@ -813,28 +867,52 @@ export default function SeekerMapDashboard() {
                                                     ₹{receipt.totalAmount}
                                                 </Text>
                                             </View>
-                                            <Text className="text-xs text-text-secondary text-center mt-1 mb-5">
-                                                Pay directly to Provider via Cash / UPI
-                                            </Text>
+                                            {/* Final Actions Container (Sprint 8.1) */}
+                                            <View className="mt-4">
+                                                <TouchableOpacity
+                                                    className="bg-brand-navy rounded-xl py-4 items-center mb-3 flex-row justify-center"
+                                                    activeOpacity={0.85}
+                                                    onPress={() => handleOpenUPI(receipt.totalAmount)}
+                                                >
+                                                    <Text className="text-xl mr-2">🔗</Text>
+                                                    <Text className="text-brand-white text-[15px] font-semibold">
+                                                        Pay ₹{receipt.totalAmount} via UPI Apps
+                                                    </Text>
+                                                </TouchableOpacity>
+
+                                                <TouchableOpacity
+                                                    className={`py-3 items-center ${isSubmittingPayment ? 'opacity-50' : ''}`}
+                                                    activeOpacity={0.6}
+                                                    disabled={isSubmittingPayment}
+                                                    onPress={() => handleMarkPaid(receipt.totalAmount)}
+                                                >
+                                                    {isSubmittingPayment ? (
+                                                        <ActivityIndicator size="small" color="#0F172A" />
+                                                    ) : (
+                                                        <Text className="text-brand-navy font-semibold text-sm">
+                                                            Mark Paid & Rate Provider
+                                                        </Text>
+                                                    )}
+                                                </TouchableOpacity>
+                                            </View>
                                         </>
                                     ) : (
                                         <View className="mb-5">
                                             <Text className="text-sm text-text-secondary text-center">
                                                 Duration unavailable — settle directly with the Provider.
                                             </Text>
+                                            
+                                            <TouchableOpacity
+                                                className="bg-brand-navy rounded-xl py-4 items-center mt-6"
+                                                activeOpacity={0.85}
+                                                onPress={() => setShowRatingModal(true)}
+                                            >
+                                                <Text className="text-brand-white text-sm font-semibold">
+                                                    Rate Provider
+                                                </Text>
+                                            </TouchableOpacity>
                                         </View>
                                     )}
-
-                                    {/* Close button — the loop reset */}
-                                    <TouchableOpacity
-                                        className="bg-brand-navy rounded-xl py-4 items-center"
-                                        activeOpacity={0.85}
-                                        onPress={() => setShowRatingModal(true)}
-                                    >
-                                        <Text className="text-brand-white text-sm font-semibold">
-                                            Continue
-                                        </Text>
-                                    </TouchableOpacity>
                                 </View>
                             )}
                         </View>

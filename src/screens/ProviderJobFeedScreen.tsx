@@ -529,7 +529,7 @@ export default function ProviderJobFeedScreen() {
             ) : (
                 <SectionList
                     sections={sections}
-                    keyExtractor={item => item.id}
+                    keyExtractor={item => `${item.id}-${item.status}`}
                     renderItem={({ item }) => (
                         <JobCard
                             job={item}
