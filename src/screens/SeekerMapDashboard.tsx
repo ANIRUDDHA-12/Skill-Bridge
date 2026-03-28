@@ -10,6 +10,7 @@ import {
     Linking,
     Platform,
     KeyboardAvoidingView,
+    Modal,
 } from 'react-native';
 import MapView, { UrlTile, Marker, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -48,13 +49,16 @@ interface Provider {
     dist_meters: number;
 }
 
-// Sprint 4.2 — active booking the seeker is currently tracking
+// Sprint 4.2+4.3 — active booking the seeker is currently tracking
 interface ActiveBooking {
     id: string;
-    status: 'pending' | 'accepted' | 'in_progress';
+    status: 'pending' | 'accepted' | 'in_progress' | 'completed';
     doorstep_pin: string;
     service_category: string;
     provider_id: string;
+    price_per_hour: number | null;     // Sprint 4.3: needed for receipt
+    started_at: string | null;         // Sprint 4.3: needed for receipt
+    completed_at: string | null;       // Sprint 4.3: needed for receipt
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -62,6 +66,26 @@ interface ActiveBooking {
 function formatDistance(meters: number): string {
     if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km away`;
     return `${Math.round(meters)} m away`;
+}
+
+// Sprint 4.3 — Receipt cost engine (1-hour minimum billing)
+function calculateReceipt(
+    startedAt: string | null,
+    completedAt: string | null,
+    hourlyRate: number | null
+) {
+    if (!startedAt || !completedAt || hourlyRate == null) {
+        return null; // can’t compute — data missing
+    }
+    const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+    const rawHours = ms / (1000 * 60 * 60);
+    const billableHours = Math.max(rawHours, 1.0); // enforce minimum 1 hour
+    return {
+        totalMinutes: Math.max(Math.round(rawHours * 60), 1),
+        billableHours: +billableHours.toFixed(2),
+        hourlyRate,
+        totalAmount: Math.round(billableHours * hourlyRate),
+    };
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -118,12 +142,12 @@ export default function SeekerMapDashboard() {
 
         const init = async () => {
             // Restore active booking on cold start / app reload
-            // Include 'in_progress' so banner survives a mid-job reload (B5 fix)
+            // Include 'in_progress' and 'completed' so banner/receipt survives reload
             const { data } = await supabase
                 .from('bookings')
-                .select('id, status, doorstep_pin, service_category, provider_id')
+                .select('id, status, doorstep_pin, service_category, provider_id, price_per_hour, started_at, completed_at')
                 .eq('seeker_id', userId)
-                .in('status', ['pending', 'accepted', 'in_progress'])
+                .in('status', ['pending', 'accepted', 'in_progress', 'completed'])
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
@@ -146,8 +170,9 @@ export default function SeekerMapDashboard() {
                     (payload) => {
                         if (!isMounted) return;
                         const updated = payload.new as ActiveBooking;
-                        // Remove banner if job is no longer active
-                        if (['declined', 'completed', 'cancelled'].includes(updated.status)) {
+                        // Remove banner if job is declined or cancelled
+                        // Sprint 4.3: 'completed' is NOT removed — receipt must render
+                        if (['declined', 'cancelled'].includes(updated.status)) {
                             setActiveBooking(null);
                         } else {
                             setActiveBooking(updated);
@@ -290,13 +315,19 @@ export default function SeekerMapDashboard() {
                     doorstep_pin,
                     // status defaults to 'pending' on DB side
                 })
-                .select('id, status, doorstep_pin, service_category, provider_id')
+                .select('id, status, doorstep_pin, service_category, provider_id, price_per_hour')
                 .single();
 
             if (error) throw new Error(error.message);
 
             // Set active booking — banner replaces search bar
-            setActiveBooking(data as ActiveBooking);
+            // Include price_per_hour for future receipt (Sprint 4.3)
+            setActiveBooking({
+                ...(data as ActiveBooking),
+                price_per_hour: provider.price_per_hour,
+                started_at: null,
+                completed_at: null,
+            });
             setSelectedProvider(null);
         } catch (err) {
             const msg = err instanceof Error ? err.message : 'Booking failed. Please try again.';
@@ -565,6 +596,94 @@ export default function SeekerMapDashboard() {
                     )}
                 </View>
             )}
+
+            {/* ── Sprint 4.3: Job Receipt Modal (status === completed) ── */}
+            {activeBooking?.status === 'completed' && (() => {
+                const receipt = calculateReceipt(
+                    activeBooking.started_at,
+                    activeBooking.completed_at,
+                    activeBooking.price_per_hour
+                );
+                return (
+                    <Modal transparent animationType="fade" visible>
+                        <View style={styles.fullOverlay} className="items-center justify-center px-6">
+                            <View className="bg-brand-white rounded-2xl p-6 w-full" style={{ maxWidth: 360 }}>
+                                {/* Header */}
+                                <Text className="text-2xl font-bold text-text-primary text-center mb-1">
+                                    ✅ Job Completed!
+                                </Text>
+                                <Text className="text-sm text-text-secondary text-center mb-5">
+                                    {activeBooking.service_category}
+                                </Text>
+
+                                {/* Divider */}
+                                <View className="border-b border-brand-border mb-4" />
+
+                                {receipt ? (
+                                    <>
+                                        {/* Time */}
+                                        <View className="flex-row justify-between mb-2">
+                                            <Text className="text-sm text-text-secondary">Time Elapsed</Text>
+                                            <Text className="text-sm font-semibold text-text-primary">
+                                                {receipt.totalMinutes < 60
+                                                    ? `${receipt.totalMinutes} min`
+                                                    : `${Math.floor(receipt.totalMinutes / 60)} hr ${receipt.totalMinutes % 60} min`}
+                                            </Text>
+                                        </View>
+
+                                        {/* Rate */}
+                                        <View className="flex-row justify-between mb-2">
+                                            <Text className="text-sm text-text-secondary">Hourly Rate</Text>
+                                            <Text className="text-sm font-semibold text-text-primary">
+                                                ₹{receipt.hourlyRate}/hr
+                                            </Text>
+                                        </View>
+
+                                        {/* Billable hours */}
+                                        <View className="flex-row justify-between mb-4">
+                                            <Text className="text-sm text-text-secondary">Billable Hours</Text>
+                                            <Text className="text-sm font-semibold text-text-primary">
+                                                {receipt.billableHours} hr{receipt.billableHours !== 1 ? 's' : ''}
+                                            </Text>
+                                        </View>
+
+                                        {/* Divider */}
+                                        <View className="border-b border-brand-border mb-4" />
+
+                                        {/* Total */}
+                                        <View className="flex-row justify-between items-baseline mb-2">
+                                            <Text className="text-base font-bold text-text-primary">Final Amount</Text>
+                                            <Text className="text-2xl font-bold text-text-primary">
+                                                ₹{receipt.totalAmount}
+                                            </Text>
+                                        </View>
+                                        <Text className="text-xs text-text-secondary text-center mt-1 mb-5">
+                                            Pay directly to Provider via Cash / UPI
+                                        </Text>
+                                    </>
+                                ) : (
+                                    <View className="mb-5">
+                                        <Text className="text-sm text-text-secondary text-center">
+                                            Duration unavailable — settle directly with the Provider.
+                                        </Text>
+                                    </View>
+                                )}
+
+                                {/* Close button — the loop reset */}
+                                <TouchableOpacity
+                                    className="bg-brand-navy rounded-xl py-4 items-center"
+                                    activeOpacity={0.85}
+                                    onPress={() => setActiveBooking(null)}
+                                >
+                                    <Text className="text-brand-white text-sm font-semibold">
+                                        Close & Return to Map
+                                    </Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </Modal>
+                );
+            })()}
 
             {/* ── Permission denied card ── */}
             {permissionDenied && (

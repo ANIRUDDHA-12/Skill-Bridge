@@ -7,6 +7,7 @@ import {
     ActivityIndicator,
     StatusBar,
     RefreshControl,
+    Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
@@ -52,13 +53,15 @@ interface JobCardProps {
     onAccept?: (id: string) => void;
     onDecline?: (id: string) => void;
     onStartJob?: (job: Booking) => void;
+    onCompleteJob?: (id: string) => void;
     actionLoading: string | null;
 }
 
-function JobCard({ job, onAccept, onDecline, onStartJob, actionLoading }: JobCardProps) {
+function JobCard({ job, onAccept, onDecline, onStartJob, onCompleteJob, actionLoading }: JobCardProps) {
     const busy = actionLoading === job.id;
     const seekerName = job.seeker?.display_name ?? 'Customer';
     const isAccepted = job.status === 'accepted';
+    const isInProgress = job.status === 'in_progress';
 
     return (
         <View className="bg-brand-white rounded-2xl p-5 mb-3 mx-4 border border-brand-border">
@@ -91,6 +94,15 @@ function JobCard({ job, onAccept, onDecline, onStartJob, actionLoading }: JobCar
             {/* Action buttons */}
             {busy ? (
                 <ActivityIndicator color="#0F172A" />
+            ) : isInProgress ? (
+                // Sprint 4.3 — In Progress: show Complete Job button
+                <TouchableOpacity
+                    className="bg-brand-navy rounded-xl py-3 items-center"
+                    activeOpacity={0.85}
+                    onPress={() => onCompleteJob?.(job.id)}
+                >
+                    <Text className="text-brand-white text-sm font-semibold">✅ Complete Job</Text>
+                </TouchableOpacity>
             ) : isAccepted ? (
                 // Active job — show Start Job button
                 <TouchableOpacity
@@ -141,15 +153,17 @@ export default function ProviderJobFeedScreen() {
     const [pinError, setPinError] = useState<string | null>(null);
     const [pinLoading, setPinLoading] = useState(false);
 
-    // ── Derived sections for SectionList (memoized — B4 fix) ─────────────────
+    // ── Derived sections for SectionList (memoized — B4 fix, Sprint 4.3: +in_progress) ──
 
+    const inProgressJobs = useMemo(() => jobs.filter(j => j.status === 'in_progress'), [jobs]);
     const pendingJobs = useMemo(() => jobs.filter(j => j.status === 'pending'), [jobs]);
     const activeJobs = useMemo(() => jobs.filter(j => j.status === 'accepted'), [jobs]);
 
     const sections: Section[] = useMemo(() => [
-        ...(activeJobs.length > 0 ? [{ title: 'Active Jobs', data: activeJobs }] : []),
-        ...(pendingJobs.length > 0 ? [{ title: 'Pending Requests', data: pendingJobs }] : []),
-    ], [activeJobs, pendingJobs]);
+        ...(inProgressJobs.length > 0 ? [{ title: 'In Progress', data: inProgressJobs }] : []),
+        ...(activeJobs.length > 0     ? [{ title: 'Active Jobs', data: activeJobs }] : []),
+        ...(pendingJobs.length > 0    ? [{ title: 'Pending Requests', data: pendingJobs }] : []),
+    ], [inProgressJobs, activeJobs, pendingJobs]);
 
     // ── Fetch bookings ────────────────────────────────────────────────────────
 
@@ -164,7 +178,7 @@ export default function ProviderJobFeedScreen() {
                 .from('bookings')
                 .select('*, seeker:profiles!seeker_id(display_name)')
                 .eq('provider_id', userId)
-                .in('status', ['pending', 'accepted'])   // both sections
+                .in('status', ['pending', 'accepted', 'in_progress'])   // all 3 sections (Sprint 4.3)
                 .order('created_at', { ascending: false });
 
             if (dbError) throw new Error(dbError.message);
@@ -278,8 +292,9 @@ export default function ProviderJobFeedScreen() {
 
             if (updateError) throw new Error(updateError.message);
 
-            // Optimistic: remove from "Active Jobs" section — job is now in progress
-            setJobs(prev => prev.filter(j => j.id !== pinModalJob!.id));
+            // Optimistic: move from "Active Jobs" → "In Progress" section (Sprint 4.3 fix D5)
+            const startedId = pinModalJob!.id;
+            setJobs(prev => prev.map(j => j.id === startedId ? { ...j, status: 'in_progress' as const, started_at: now } : j));
             setPinModalJob(null);
         } catch (err) {
             const msg = err instanceof Error ? err.message : 'Failed to start job. Try again.';
@@ -288,6 +303,41 @@ export default function ProviderJobFeedScreen() {
             setPinLoading(false);
         }
     }, [pinModalJob, pinLoading]);
+
+    // ── Sprint 4.3: Complete Job ───────────────────────────────────────────────
+
+    const handleCompleteJob = useCallback(async (jobId: string) => {
+        Alert.alert(
+            'Finish Job?',
+            'Have you completed the requested service?',
+            [
+                { text: 'Not Yet', style: 'cancel' },
+                {
+                    text: 'Yes, Complete',
+                    onPress: async () => {
+                        setActionLoading(jobId);
+                        try {
+                            const now = new Date().toISOString();
+                            const { error: updateError } = await supabase
+                                .from('bookings')
+                                .update({ status: 'completed', completed_at: now })
+                                .eq('id', jobId);
+
+                            if (updateError) throw new Error(updateError.message);
+
+                            // Optimistic removal — completed jobs leave the feed
+                            setJobs(prev => prev.filter(j => j.id !== jobId));
+                        } catch (err) {
+                            if (__DEV__) console.warn('[ProviderJobFeed] handleCompleteJob:', err);
+                            await fetchJobs(true); // re-fetch on failure to restore truth
+                        } finally {
+                            setActionLoading(null);
+                        }
+                    },
+                },
+            ]
+        );
+    }, [fetchJobs]);
 
     // ── Pull-to-refresh ───────────────────────────────────────────────────────
 
@@ -335,7 +385,7 @@ export default function ProviderJobFeedScreen() {
                     <Text className="text-xl font-bold text-text-primary">Job Feed</Text>
                     <Text className="text-xs text-text-secondary mt-0.5">
                         {jobs.length > 0
-                            ? `${pendingJobs.length} pending · ${activeJobs.length} active`
+                            ? `${pendingJobs.length} pending · ${activeJobs.length} active · ${inProgressJobs.length} in progress`
                             : 'Live updates enabled'}
                     </Text>
                 </View>
@@ -373,6 +423,7 @@ export default function ProviderJobFeedScreen() {
                                 setPinError(null);
                                 setPinModalJob(job);
                             }}
+                            onCompleteJob={handleCompleteJob}
                             actionLoading={actionLoading}
                         />
                     )}
