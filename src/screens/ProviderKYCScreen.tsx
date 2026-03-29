@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import * as FileSystem from 'expo-file-system';
+import { decode } from 'base64-arraybuffer';
 import {
     View,
     Text,
@@ -104,16 +106,22 @@ export default function ProviderKYCScreen() {
         try {
             // Helper: upload a local URI to Supabase Storage
             const uploadFile = async (uri: string, type: 'id' | 'selfie'): Promise<string> => {
-                const ext = uri.substring(uri.lastIndexOf('.') + 1);
+                // 1. Get the extension safely (default to jpeg if missing)
+                const ext = uri.includes('.') ? uri.substring(uri.lastIndexOf('.') + 1) : 'jpeg';
                 const fileName = `${userId}/${Date.now()}_${type}.${ext}`;
 
-                // Convert local URI to blob
-                const response = await fetch(uri);
-                const blob = await response.blob();
+                // 2. Read the file completely bypassing 'fetch' and 'blob'
+                const base64File = await FileSystem.readAsStringAsync(uri, {
+                    encoding : 'base64',
+                })
+
+                // 3. convert the base64 string to raw ArrayBuffer
+                const arrayBuffer = decode(base64File);
+
 
                 const { data, error } = await supabase.storage
                     .from('kyc_documents')
-                    .upload(fileName, blob, {
+                    .upload(fileName, arrayBuffer, {
                         contentType: `image/${ext}`,
                         upsert: false,
                     });
