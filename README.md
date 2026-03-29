@@ -4,6 +4,12 @@
 
 ---
 
+![WhatsApp Image 2026-03-28 at 9 16 28 PM](https://github.com/user-attachments/assets/e7bca207-a043-4269-85b0-0390f40eca77)
+![WhatsApp Image 2026-03-28 at 7 01 01 PM](https://github.com/user-attachments/assets/ea829aec-aec5-4618-a438-97f8b9e05a76)
+![WhatsApp Image 2026-03-28 at 7 01 02 PM](https://github.com/user-attachments/assets/093a7159-0642-4229-abd3-92bb004abdc2)
+
+
+
 ## Project Status
 
 ```
@@ -208,7 +214,8 @@ npx expo start --tunnel
 
 ## Production Builds (EAS)
 
-The project is currently configured for Expo Application Services (EAS) to orchestrate cloud builds.
+The project is currently configured for Expo Application Services (EAS) to orchestrate cloud builds.![Uploading WhatsApp Image 2026-03-28 at 9.16.28 PM.jpeg…]()
+
 
 To build the standalone Android `.apk` for live untethered testing:
 
