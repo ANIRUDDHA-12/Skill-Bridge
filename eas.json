@@ -1,45 +1,48 @@
 {
-    "cli": {
-        "version": ">= 12.0.0",
-        "appVersionSource": "local"
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
+      },
+      "env": {
+        "APP_ENV": "development"
+      },
+      "channel": "development"
     },
-    "build": {
-        "development": {
-            "developmentClient": true,
-            "distribution": "internal",
-            "android": {
-                "buildType": "apk",
-                "gradleCommand": ":app:assembleDebug"
-            },
-            "env": {
-                "APP_ENV": "development"
-            }
-        },
-        "preview": {
-            "distribution": "internal",
-            "android": {
-                "buildType": "apk"
-            },
-            "env": {
-                "APP_ENV": "preview"
-            }
-        },
-        "production": {
-            "distribution": "store",
-            "android": {
-                "buildType": "app-bundle"
-            },
-            "env": {
-                "APP_ENV": "production"
-            }
-        }
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_ENV": "preview"
+      },
+      "channel": "preview"
     },
-    "submit": {
-        "production": {
-            "android": {
-                "serviceAccountKeyPath": "./google-services.json",
-                "track": "internal"
-            }
-        }
+    "production": {
+      "distribution": "store",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "APP_ENV": "production"
+      },
+      "channel": "production"
     }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./google-services.json",
+        "track": "internal"
+      }
+    }
+  }
 }

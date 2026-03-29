@@ -34,6 +34,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
@@ -48,6 +50,12 @@
         }
       ]
     ],
-    "owner": "aniruddha26s-organization"
+    "owner": "aniruddha26s-organization",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/f2c6e5d0-7d96-402d-b68a-ecb46000e15e"
+    }
   }
 }
