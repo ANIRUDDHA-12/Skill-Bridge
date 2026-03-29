@@ -7,8 +7,9 @@
 ## Project Status
 
 ```
-Sprints completed: 7 of ~12 planned
-Estimated completion: ~70%
+Status: MVP Complete ✨
+Sprints completed: 13 of 13 planned
+Estimated completion: 100% (Production Ready)
 TypeScript errors: 0
 ```
 
@@ -24,10 +25,12 @@ TypeScript errors: 0
 | Real-time booking notifications | ✅ Complete |
 | Doorstep PIN handshake (Start Job) | ✅ Complete |
 | Seeker active job banner (live status) | ✅ Complete |
-| KYC / Identity verification | ❌ Not started |
-| Payment flow (Razorpay / UPI) | ❌ Not started |
-| Ratings & Reviews | ❌ Not started |
-| Provider live location updates | ❌ Not started |
+| Provider live location updates | ✅ Complete |
+| Ratings & Reviews | ✅ Complete |
+| Payment flow (UPI Deep Links / Razorpay) | ✅ Complete |
+| KYC / Identity verification | ✅ Complete (React Native camera to Supabase; Admin manual verification) |
+| App branding (Splash screens + Icons) | ✅ Complete |
+| Android .apk EAS Build | ✅ Complete |
 
 ---
 
@@ -35,10 +38,10 @@ TypeScript errors: 0
 
 | Layer | Technology |
 |---|---|
-| Mobile framework | React Native (Expo SDK 50) |
+| Mobile framework | React Native (Expo SDK 54) |
 | Styling | NativeWind v4 (Tailwind for RN) |
 | State management | Redux Toolkit |
-| Navigation | React Navigation v6 (Native Stack) |
+| Navigation | React Navigation v7 (Native Stack) |
 | Backend / DB | Supabase (PostgreSQL + PostGIS) |
 | Spatial queries | PostGIS — `ST_DWithin`, `ST_Distance`, `ST_Point` |
 | Maps | `react-native-maps` with OpenStreetMap tiles (zero API cost) |
@@ -70,12 +73,13 @@ src/
 ├── lib/
 │   └── supabase.ts           # Supabase client instance
 ├── navigation/
-│   └── AppNavigator.tsx      # 5-branch conditional router
+│   └── AppNavigator.tsx      # Multi-branch conditional router
 ├── screens/
 │   ├── LoginScreen.tsx       # Email input
 │   ├── OtpScreen.tsx         # OTP verification
 │   ├── RoleSelectionScreen.tsx
 │   ├── ProviderSetupScreen.tsx   # Name / category / price / GPS
+│   ├── ProviderKYCScreen.tsx     # ID & Selfie upload for identity verification
 │   ├── ProviderJobFeedScreen.tsx # Accept/Decline + PIN Start Job
 │   └── SeekerMapDashboard.tsx    # OS map + search + booking + PIN banner
 └── store/
@@ -96,8 +100,12 @@ profiles (
   display_name text,
   service_category text,
   price_per_hour numeric,
+  upi_id text,
   location geography,          -- PostGIS point
-  is_active boolean
+  is_active boolean,
+  kyc_status text,             -- 'unverified' | 'pending' | 'verified'
+  id_url text,
+  selfie_url text
 )
 
 -- Bookings
@@ -134,6 +142,8 @@ App Launch
     │
     ├─ Provider + no display_name ──► ProviderSetupStack (Onboarding)
     │
+    ├─ Provider + kyc unverified ───► KYCStack (ProviderKYC)
+    │
     ├─ Provider + profile complete ─► ProviderStack (Job Feed)
     │
     └─ Seeker ──────────────────────► SeekerStack (Map Dashboard)
@@ -152,22 +162,25 @@ App Launch
 | 3.3 | Provider Setup screen + Bottom Sheet | `d2b3687` |
 | 4.1 | Book Now + Provider Job Feed + Real-time | `42e44bc` |
 | 4.2 | Doorstep PIN Handshake + Active Job Banner | `1575f1b` |
+| 5–7 | Provider sync, Reviews System, Deep-link UPI Payments | *Multiple* |
+| 8.1 | KYC Frontend - Camera capture + Supabase upload | `5f58c25` |
+| 9.1 | Production App Branding & EAS Standalone Build | `0299520` |
 
 ---
 
 ## What Works End-to-End (Today)
 
-1. **Seeker** logs in → sees OpenStreetMap centered on their GPS location
-2. Types "Plumber" → filtered provider pins appear within 5 km
-3. Taps a provider pin → bottom sheet shows name, category, price, distance
-4. Taps **Book Now** → 4-digit PIN generated, booking inserted in Supabase
-5. Active Job Banner replaces search bar: "Waiting for Provider…"
-6. **Provider** logs in → Job Feed shows incoming booking with seeker name
-7. Provider taps **Accept** → both screens update in real-time (Supabase Realtime)
-8. Seeker banner: "Provider on the Way! PIN: **4729**"
-9. Provider taps **Start Job** → PIN modal appears
-10. Provider enters correct PIN → `status = in_progress`, `started_at` set
-11. Seeker banner: "Job In Progress"
+1. **Provider** sets up account, completes **KYC Integration** (ID/Selfie upload) and enters pending loop until verified by Admin.
+2. Verified **Seeker** logs in → sees OpenStreetMap centered on their GPS location.
+3. Seeker searches for a service (e.g. "Plumber") → filtered provider pins appear within a 5 km radius.
+4. Taps a provider pin → animated bottom sheet shows name, category, hourly rate, and exact distance.
+5. Taps **Book Now** → secure 4-digit PIN generated, pending booking inserted in Supabase in real-time.
+6. Seeker UI converts to active booking state: "Waiting for Provider…"
+7. **Provider** gets real-time push to their Job Feed showing seeker name and distance.
+8. Provider **Accepts** → UI dynamically switches for both in real-time.
+9. Provider arrives and taps **Start Job** → triggers the Handshake PIN Modal.
+10. Entering the correct PIN sets job to `in_progress`.
+11. Job Complete triggers end of flow → Native UPI Payment redirection, final Review.
 
 ---
 
@@ -193,13 +206,24 @@ npx expo start --tunnel
 
 ---
 
-## Remaining Roadmap
+## Production Builds (EAS)
 
-| Sprint | Planned |
+The project is currently configured for Expo Application Services (EAS) to orchestrate cloud builds.
+
+To build the standalone Android `.apk` for live untethered testing:
+
+```bash
+eas build --platform android --profile preview
+```
+
+## Future Roadmap (Post-MVP)
+
+| Phase | Planned |
 |---|---|
-| 4.3 | "Complete Job" button → `status=completed`, `completed_at` set |
-| 5.1 | KYC — PAN/Aadhaar upload + face match (Python FastAPI microservice) |
-| 5.2 | Provider go-online toggle + live GPS tracking |
-| 6.1 | Ratings & Reviews after job completion |
-| 6.2 | Razorpay payment gateway |
-| 7.0 | App Store build — icons, splash, privacy policy |
+| v2.0 | Automated AI KYC Verification replacing Admin Panel (Python FastAPI microservice with py-tesseract and liveness check) |
+| v2.1 | iOS App Store & Google Play Store release |
+| v2.2 | In-app WebSocket Chat System |
+
+## Author
+**Aniruddha**
+- GitHub: [@ANIRUDDHA-12](https://github.com/ANIRUDDHA-12)
