@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { Alert } from 'react-native';
 import {
     View,
     Text,
@@ -26,23 +27,28 @@ export default function RoleSelectionScreen() {
         setLoading(true);
         setError('');
 
+        try {
         const { error: upsertError } = await supabase
             .from('profiles')
             .upsert({
                 id: session.user.id,
                 email: session.user.email,
                 account_type: role,
-            });
+            }); 
 
-        if (upsertError) {
-            setError(upsertError.message);
-            setLoading(false);
-            return;
-        }
+            if (upsertError) throw upsertError;
 
+            setLoading(false)
+        
         // Dispatch updates Redux → AppNavigator auto-transitions to correct stack
         dispatch(setAccountType(role));
         // No navigation.navigate() needed — AppNavigator handles it via Redux state
+
+        } catch(err:any){
+            setLoading(false);
+            setError(err.message);
+            Alert.alert("Database Error", err.message);
+        }
     }, [loading, session, dispatch]);
 
     return (
